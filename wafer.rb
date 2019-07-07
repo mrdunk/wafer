@@ -1,78 +1,138 @@
 require 'sketchup'
 
+@configKeys = ["cutDiamiter",\
+               "cutDepth",\
+               "decimalPlaces",\
+               "scriptMode",\
+               "orientation",\
+               "debug"]
+@config = {}
+
+# Reset config to default values.
+def clearConfig()
+  @config.each do |key, value|
+    result = Sketchup.write_default('dla_wafer_rb', key,  nil)
+    puts("clear: #{key} #{result}")
+  end
+end
+
+# Save entries in @config to persistent storage.
+def saveConfig()
+  @config.each do |key, value|
+    result = Sketchup.write_default('dla_wafer_rb', key,  value)
+    puts("save: #{key}, #{value}, #{result}")
+  end
+end
+
+# Load configuration from persistent storage into @config hashmap.
+def loadConfig()
+  defaultValue = {\
+                  "cutDiamiter" => "1.0",\
+                  "scriptMode" => "Single",\
+                  "cutDepth" => "0.5",\
+                  "orientation" => "Stacked",\
+                  "decimalPlaces" => "3",\
+                  "debug" => "false"}
+
+  @configKeys.each do | key |
+    value = Sketchup.read_default('dla_wafer_rb', key)
+    puts("load: #{key}, #{value}")
+    if value == nil
+      value = defaultValue[key]
+    end
+    @config[key] = value
+  end
+end
+
+# Set values in the @config hashmap.
+def menu()
+  configDescriptions = {\
+                        "cutDiamiter" => "Diamiter of cutter? (mm)",\
+                        "scriptMode" => "Mode of operation",\
+                        "cutDepth" => "Depth of cut? (mm)",\
+                        "orientation" => "Preview orientation",\
+                        "decimalPlaces" => "Gcode decimal places",\
+                        "debug" => "Enable debug pannel"}
+  sizes = "0.2|0.3|0.4|0.5|0.6|0.7|0.8|0.9|"\
+          "1.0|1.1|1.2|1.3|1.4|1.5|1.6|1.7|1.8|1.9|"\
+          "2.0|2.1|2.2|2.3|2.4|2.5|2.6|2.7|2.8|2.9|3.0|3.5|4.0|4.5|5.0"
+  menuOptions = {\
+                 "cutDiamiter" => sizes,\
+                 "scriptMode" => "Single|Repeated single|Contour",\
+                 "cutDepth" => sizes,\
+                 "orientation" => "Spread|Stacked",\
+                 "decimalPlaces" => "0|1|2|3|4",\
+                 "debug" => "true|false"}
+  descriptions = []
+  values = []
+  options = []
+  @configKeys.each do | key |
+    descriptions.push(configDescriptions[key])
+    values.push(@config[key])
+    options.push(menuOptions[key])
+  end
+  input = UI.inputbox descriptions, values, options, "Gcode options."
+
+  if input
+    for x in 0..(input.size - 1)
+      key = @configKeys[x]
+      @config[key] = input[x]
+      puts("menu: #{key} #{input[x]}")
+    end
+    return true
+  end
+end 
+
+# Round floats down to a sane number of decimal places.
+def roundToPlaces(value, places)
+  return (value * (10 ** places.to_i)).round.to_f / (10 ** places.to_i)
+end
+
+
 # Add a menu item to launch our plugin.
 UI.menu("PlugIns").add_item("Wafer") {
-  result = Sketchup.set_status_text "Calculating Gcode", SB_VCB_VALUE
+  Sketchup.set_status_text "Calculating Gcode", SB_VCB_VALUE
 
-  filename = 'C:\\test.txt'
+  loadConfig()
+  if menu()
+    saveConfig()
 
-  if File.file?(filename)
-    defaults=[]
-    textfile = File.new(filename, 'r' )
-    textfile.readlines().each do |item|
-      defaults.push (item[0..-2])
-    end
-    textfile.close()
-  else
-    defaults = ["1.0", "No", "0.5", "Flat", "3", false]
-  end #if File.file?()
-
-
-
-  # With three params, it shows all text boxes:
-  prompts = ["Diamiter of cutter? (mm)", "Mode of operation:", "Depth of cut? (mm)", "Preview orientation?", "Gcode decimal places", "Enable debug pannel"]
-  sizes = "0.2|0.3|0.4|0.5|0.6|0.7|0.8|0.9|1.0|1.1|1.2|1.3|1.4|1.5|1.6|1.7|1.8|1.9|2.0|2.1|2.2|2.3|2.4|2.5|2.6|2.7|2.8|2.9|3.0|3.5|4.0|4.5|5.0"
-  list = [sizes, "Single|Repeated single|Contour", sizes, "Spread|Stacked", "0|1|2|3|4", "true|false"]
-
-  input = UI.inputbox prompts, defaults, list, "Gcode options."
-  if input
-    if input[5].downcase == "true"
+    if @config["debug"]
       # Show the Ruby Console at startup so we can
       # see any programming errors we may make.
       Sketchup.send_action "showRubyPanel:"
     end
 
-    textfile = File.new( filename, "w" )
-    input.each do | item |
-      textfile.puts(item)
-    end
-    textfile.close()
-
-
-
-    path_to_save_to = UI.savepanel "Save Gcode File", "c:\\", "default.nc"
-    puts(path_to_save_to)
-    if path_to_save_to
+    gcodeFile = UI.savepanel "Save Gcode File", "c:\\", "default.nc"
+    puts("Writing to #{gcodeFile}")
+    if gcodeFile
       new_wafer = Wafer.new
-      new_wafer.out_file = path_to_save_to
-      new_wafer.preview_layout = input[3]
+      new_wafer.out_file = gcodeFile
+      new_wafer.preview_layout = @config["orientation"]
       new_wafer.height = 0
-      new_wafer.cut_depth = input[2]
-      new_wafer.mill_diamiter = (input[0].to_f)/100
+      new_wafer.cut_depth = @config["cutDepth"]
+      new_wafer.mill_diamiter = (@config["cutDiamiter"].to_f)/100
       new_wafer.find_bounds
       new_wafer.header  
       new_wafer.create_layers
-      new_wafer.decimalPlaces = input[4]
+      new_wafer.decimalPlaces = @config["decimalPlaces"]
 
-      if input[1] == "Single"
+      if @config["scriptMode"] == "Single"
         new_wafer.single
-      elsif input[1] == "Repeated single"
+      elsif @config["scriptMode"] == "Repeated single"
         new_wafer.repeated_single
-      elsif input[1] == "Contour"
+      elsif @config["scriptMode"] == "Contour"
         new_wafer.contour
       end
 
       new_wafer.footer
-    end #if @path_to_save_to
-  end #if input
+    end #if @gcodeFile
+  end #if menu()
 
-  result = Sketchup.set_status_text "", SB_VCB_VALUE
+  #clearConfig()
+
+  Sketchup.set_status_text "", SB_VCB_VALUE
 }
-
-
-def roundToPlaces(value, places)
-  return (value * (10 ** places.to_i)).round.to_f / (10 ** places.to_i)
-end
 
 
 class Wafer
@@ -103,56 +163,46 @@ class Wafer
   end
   
 
-  #attr_accessor :offset_x
-  #attr_accessor :offset_y
-  #attr_accessor :offset_z
   attr_accessor :preview_layout
   attr_accessor :cut_depth
 
-
+  # Populate output file with gcode header.
   def header
-      # delete contents of output file
-
     @pos_x = 0
     @pos_y = 0
     @pos_z = @corner_rbt.z.to_mm + 1 
 
     @outputfile = File.new( @out_file , "w" )
     @outputfile.puts("G21 ( Unit of measure: mm )")
-      @outputfile.puts("G90 ( Absolute programming )")
+    @outputfile.puts("G90 ( Absolute programming )")
     @outputfile.puts("M03 ( Spindle on [clockwise] )")
     @outputfile.puts("G00 Z#{@pos_z} ( Rapid positioning to highest point )")
-      #@outputfile.puts("G00 X#{@pos_x} Y#{@pos_y} ")
-      
+
   end #header
 
-
+  # Populate output file with gcode footer.
   def footer
     @pos_z = @corner_rbt[2].to_mm + 1
 
     @outputfile.puts("")
     @outputfile.puts("G00 Z#{@pos_z} ( Rapid positioning to highest point +1mm )")
-  @outputfile.puts("M05 ( Spindle stop )")
-  @outputfile.puts("M02 ( End of program )")
+    @outputfile.puts("M05 ( Spindle stop )")
+    @outputfile.puts("M02 ( End of program )")
 
     @outputfile.puts("")
-  @outputfile.puts("( end )")
-  @outputfile.close()
-  
+    @outputfile.puts("( end )")
+    @outputfile.close()
   end #footer
 
-
   def create_layers
-    # here we create some seperate layers to display our router paths on.
+    # here we create some separate layers to display our router paths on.
     model = Sketchup.active_model
     layers = model.layers
-  # happily it does not seem to matter if we try to create a layer that already exists.
+    # happily it does not seem to matter if we try to create a layer that already exists.
     outline_layer = layers.add "outline"
     path_layer = layers.add "path"
-  test_layer = layers.add "test"
-  
+    test_layer = layers.add "test"
   end #create_layers
-
 
   def single
     @height = @corner_lfb.z.to_mm
@@ -163,8 +213,6 @@ class Wafer
 
     return
   end #def Single
-
-
 
   def repeated_single
     puts(trace_outline)
@@ -183,8 +231,6 @@ class Wafer
     end
   
   end #def repeated_single
-  
-  
   
   def contour
     @height = @corner_rbt.z.to_mm
@@ -206,52 +252,41 @@ class Wafer
   
   end #contor
 
-
-
   def find_bounds
-  
-      # Get "handles" to our model and the Entities collection it contains.
+    # Get "handles" to our model and the Entities collection it contains.
     model = Sketchup.active_model
     selection = model.selection
- 
- 
+
     # boundry of whole model
     @model_lfb = model.bounds.corner(0)
     @model_rbt = model.bounds.corner(7)
-  
-  # boundry of selection
-  @corner_lfb = selection[0].bounds.corner(0)
-    @corner_rbt = selection[0].bounds.corner(0)
-  selection.each do |entity| 
-    if entity.bounds.corner(0).x < @corner_lfb.x
-      @corner_lfb.x = entity.bounds.corner(0).x
-      end
-    if entity.bounds.corner(0).y < @corner_lfb.y
-      @corner_lfb.y = entity.bounds.corner(0).y
-      end
-    if entity.bounds.corner(0).z < @corner_lfb.z
-      @corner_lfb.z = entity.bounds.corner(0).z
-      end
-    if entity.bounds.corner(7).x > @corner_rbt.x
-      @corner_rbt.x = entity.bounds.corner(7).x
-      end
-    if entity.bounds.corner(7).y > @corner_rbt.y
-      @corner_rbt.y = entity.bounds.corner(7).y
-      end
-    if entity.bounds.corner(7).z > @corner_rbt.z
-      @corner_rbt.z = entity.bounds.corner(7).z
-      end
-    
-    end # selection.each do
-  
 
-  
+    # boundry of selection
+    @corner_lfb = selection[0].bounds.corner(0)
+    @corner_rbt = selection[0].bounds.corner(0)
+    selection.each do |entity| 
+      if entity.bounds.corner(0).x < @corner_lfb.x
+        @corner_lfb.x = entity.bounds.corner(0).x
+      end
+      if entity.bounds.corner(0).y < @corner_lfb.y
+        @corner_lfb.y = entity.bounds.corner(0).y
+      end
+      if entity.bounds.corner(0).z < @corner_lfb.z
+        @corner_lfb.z = entity.bounds.corner(0).z
+      end
+      if entity.bounds.corner(7).x > @corner_rbt.x
+        @corner_rbt.x = entity.bounds.corner(7).x
+      end
+      if entity.bounds.corner(7).y > @corner_rbt.y
+        @corner_rbt.y = entity.bounds.corner(7).y
+      end
+      if entity.bounds.corner(7).z > @corner_rbt.z
+        @corner_rbt.z = entity.bounds.corner(7).z
+      end
+    end # selection.each do
   end
 
-
-
   def trace_outline
-
     # Get "handles" to our model and the Entities collection it contains.
     model = Sketchup.active_model
     selection = model.selection
@@ -265,15 +300,16 @@ class Wafer
 
     group = entities.add_group
     entities2 = group.entities
-    new_face = entities2.add_face [@corner_lfb[0]-0.1, @corner_lfb[1]-0.1, @height.mm] , [@corner_rbt[0]+0.1, @corner_lfb[1]-0.1, @height.mm] , [@corner_rbt[0]+0.1, @corner_rbt[1]+0.1, @height.mm], [@corner_lfb[0]-0.1, @corner_rbt[1]+0.1, @height.mm]
+
+    new_face = entities2.add_face [@corner_lfb[0]-0.1, @corner_lfb[1]-0.1, @height.mm],\
+                                  [@corner_rbt[0]+0.1, @corner_lfb[1]-0.1, @height.mm],\
+                                  [@corner_rbt[0]+0.1, @corner_rbt[1]+0.1, @height.mm],\
+                                  [@corner_lfb[0]-0.1, @corner_rbt[1]+0.1, @height.mm]
 
     selection.each do |entity| 
       if entity.typename == "Face"
-
         entity.edges.each do |edge|
-    
         intersect = Geom.intersect_line_plane(edge.line, new_face.plane)
-  
           if intersect
             if p1 == nil
               p1 = intersect
@@ -281,7 +317,6 @@ class Wafer
               p2 = intersect
             end
           end
-    
         end
     
         if p1
@@ -301,7 +336,6 @@ class Wafer
     return "done trace_outline"
   end #trace_outline
   
-  
   def isolate_part
     # Here we itterate through all points on a slice and make sure they are in consecutive order.
     # At the end of this function @wafer_objects will contain an array of @wafer_object.
@@ -310,7 +344,6 @@ class Wafer
     # but the code will work if you only run it on single faces as well.
     @wafer_objects = []
     wafer_object = []
-  
   
     @points.each do |point|      # itterate through all points.
       p1 = pp1 = point[0]      # save this point as a starting point.
