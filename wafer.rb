@@ -3,6 +3,7 @@ require 'sketchup'
 @configKeys = ["cutDiamiter",\
                "cutDepth",\
                "decimalPlaces",\
+               "closeGaps",\
                "scriptMode",\
                "orientation",\
                "debug"]
@@ -30,6 +31,7 @@ def loadConfig()
                   "cutDiamiter" => "1.0",\
                   "scriptMode" => "Single",\
                   "cutDepth" => "0.5",\
+                  "closeGaps" => "0.0",\
                   "orientation" => "Stacked",\
                   "decimalPlaces" => "3",\
                   "debug" => "false"}
@@ -50,16 +52,23 @@ def menu()
                         "cutDiamiter" => "Diamiter of cutter? (mm)",\
                         "scriptMode" => "Mode of operation",\
                         "cutDepth" => "Depth of cut? (mm)",\
+                        "closeGaps" => "Close gaps in looped paths (mm)",\
                         "orientation" => "Preview orientation",\
                         "decimalPlaces" => "Gcode decimal places",\
                         "debug" => "Enable debug pannel"}
-  sizes = "0.2|0.3|0.4|0.5|0.6|0.7|0.8|0.9|"\
+  sizes = "0.0|"\
+          "0.01|0.02|0.03|0.04|0.05|0.06|0.07|0.08|0.09|"\
+          "0.1|0.2|0.3|0.4|0.5|0.6|0.7|0.8|0.9|"\
           "1.0|1.1|1.2|1.3|1.4|1.5|1.6|1.7|1.8|1.9|"\
-          "2.0|2.1|2.2|2.3|2.4|2.5|2.6|2.7|2.8|2.9|3.0|3.5|4.0|4.5|5.0"
+          "2.0|2.1|2.2|2.3|2.4|2.5|2.6|2.7|2.8|2.9|"\
+          "3.0|3.175|3.5|4.0|4.5|5.0|6.0|6.35|7.0|8.0|9.0|9.525|10.0|"\
+          "12.0|12.7|14.0|15.0|16.0|18.0|20.0|"\
+          "25.0|30.0|35.0|40.0|50.0|100.0"
   menuOptions = {\
                  "cutDiamiter" => sizes,\
                  "scriptMode" => "Single|Repeated single|Contour",\
                  "cutDepth" => sizes,\
+                 "closeGaps" => sizes,\
                  "orientation" => "Spread|Stacked",\
                  "decimalPlaces" => "0|1|2|3|4",\
                  "debug" => "true|false"}
@@ -88,6 +97,12 @@ def roundToPlaces(value, places)
   return (value * (10 ** places.to_i)).round.to_f / (10 ** places.to_i)
 end
 
+def roundPointToPlaces(point, places)
+  return Geom::Point3d.new(roundToPlaces(point.x, places),\
+                           roundToPlaces(point.y, places),\
+                           roundToPlaces(point.z, places))
+end
+
 
 # Add a menu item to launch our plugin.
 UI.menu("PlugIns").add_item("Wafer") {
@@ -97,7 +112,7 @@ UI.menu("PlugIns").add_item("Wafer") {
   if menu()
     saveConfig()
 
-    if @config["debug"]
+    if @config["debug"] != "false"
       # Show the Ruby Console at startup so we can
       # see any programming errors we may make.
       Sketchup.send_action "showRubyPanel:"
@@ -116,6 +131,7 @@ UI.menu("PlugIns").add_item("Wafer") {
       new_wafer.header  
       new_wafer.create_layers
       new_wafer.decimalPlaces = @config["decimalPlaces"]
+      new_wafer.closeGaps = @config["closeGaps"]
 
       if @config["scriptMode"] == "Single"
         new_wafer.single
@@ -161,7 +177,9 @@ class Wafer
   def out_file
     @out_file 
   end
-  
+  def closeGaps=(cg)
+    @closeGaps = cg.to_f
+  end
 
   attr_accessor :preview_layout
   attr_accessor :cut_depth
@@ -287,6 +305,7 @@ class Wafer
   end
 
   def trace_outline
+    Sketchup.set_status_text "Calculating Gcode: Finding faces", SB_VCB_VALUE
     # Get "handles" to our model and the Entities collection it contains.
     model = Sketchup.active_model
     selection = model.selection
@@ -296,11 +315,12 @@ class Wafer
 
     p1=nil
     p2=nil
-    @points = []
+    @lines = []
 
-    group = entities.add_group
-    entities2 = group.entities
+    temparyGroup = entities.add_group
+    entities2 = temparyGroup.entities
 
+    # Make a face parallel to the ground to check for intersections with models faces.
     new_face = entities2.add_face [@corner_lfb[0]-0.1, @corner_lfb[1]-0.1, @height.mm],\
                                   [@corner_rbt[0]+0.1, @corner_lfb[1]-0.1, @height.mm],\
                                   [@corner_rbt[0]+0.1, @corner_rbt[1]+0.1, @height.mm],\
@@ -309,7 +329,7 @@ class Wafer
     selection.each do |entity| 
       if entity.typename == "Face"
         entity.edges.each do |edge|
-        intersect = Geom.intersect_line_plane(edge.line, new_face.plane)
+          intersect = Geom.intersect_line_plane(edge.line, new_face.plane)
           if intersect
             if p1 == nil
               p1 = intersect
@@ -318,86 +338,84 @@ class Wafer
             end
           end
         end
-    
-        if p1
-          #  if entity.classify_point(p1) <= 15
-          @points.push [p1, p2]
+
+        if p1 and p2
+          @lines.push [roundPointToPlaces(p1, @decimalPlaces),
+                       roundPointToPlaces(p2, @decimalPlaces)]
           new_line = entities.add_line p1, p2
           new_line.layer = test_layer
-          #  end #if new_face.clasify_point(...)
         end
         p1 = nil
+        p2 = nil
       end #entity.typename == "Face"
     end
-    group.erase!
+    temparyGroup.erase!
 
     #new_face=nil
-    #puts(@points.length)  
+    #puts(@lines.length)  
     return "done trace_outline"
   end #trace_outline
   
   def isolate_part
-    # Here we itterate through all points on a slice and make sure they are in consecutive order.
-    # At the end of this function @wafer_objects will contain an array of @wafer_object.
-    # Each @wafer_object will contain a point which together makes up one continuous line to be milled.
-    # The code is quicker if the @wafer_object is a loop (ie, finnishes at the same phisical point it starts at)
+    # Here we iterate through all points on a slice and make sure they are in
+    # consecutive order.
+    # At the end of this function @wafer_objects will contain an array of
+    # @wafer_object.
+    # Each @wafer_object will contain a point which together makes up one
+    # continuous line to be milled.
+    # The code is quicker if the @wafer_object is a loop (ie, finishes at the
+    # same physical point it starts at)
     # but the code will work if you only run it on single faces as well.
+    Sketchup.set_status_text "Calculating Gcode: Sanitizing shapes", SB_VCB_VALUE
     @wafer_objects = []
     wafer_object = []
-  
-    @points.each do |point|      # itterate through all points.
-      p1 = pp1 = point[0]      # save this point as a starting point.
-      p2 = pp2 = point[1]
-      wafer_object = [p1]      # save this line to the @wafer_object.
-      wafer_object.push p2      # save this line to the @wafer_object.
-      @points.delete [p1,p2]      # delete this line from the list.
-      
-      point2=[nil,nil]
-      counter=0
-      itterations = @points.size      # save size of point array before we start deleting bits out of it.
-      while (counter <= itterations) && ( (counter < 2) || (wafer_object[0] != wafer_object.last) )
-        # stay in here until more itterations have passed than there are lines to draw
-        # OR until we get back to the start coordinates. (ie, closing the loop.)
-      
-      
-        @points.each do |point2|
-          # loop through the remaining lines looking for one that joins the previous end point.
-      
-          if (pp2 == point2[0])
-            pp1 = pp2 = point2[1]
-            wafer_object.push point2[1]
-            @points.delete point2
-            break
-          elsif (pp2 == point2[1])
-            pp1 = pp2 = point2[0]
-            wafer_object.push point2[0]
-            @points.delete point2
-            break
-          elsif (p1 == point2[0])
-            p1 = point2[1]
-            wafer_object.insert(0, point2[1])
-            @points.delete point2
-            break
-          elsif (p1 == point2[1])
-            p1 = point2[0]
-            wafer_object.insert(0, point2[0])
-            @points.delete point2
-            break
-          end    
-        end #@point2.each
-        counter+=1
-      end #while
-      
-      
-      #puts(p1)
-      #puts(pp2)
-      #puts
-      #puts( (p1 != @point2[0]) && (p2 != @point2[0]) && (p1 != @point2[1]) && (p2 != @point2[1])) 
-      #puts()
-      
-      @wafer_objects.push wafer_object.dup
 
-    end #@points.each
+    while @lines.size > 0
+      line = @lines.shift
+      head = line[0]
+      tail = line[1]
+      wafer_object = [tail, head]
+
+      loop do
+        adjacent = @lines.select{ |nextLine| nextLine[0] == head or\
+                                             nextLine[0] == tail or\
+                                             nextLine[1] == head or\
+                                             nextLine[1] == tail}
+        if adjacent.size == 0
+          break
+        end
+
+        adjacent.each do |nextLine|
+          if nextLine[0] == head
+            head = nextLine[1]
+            wafer_object.push(nextLine[1])
+            @lines.delete(nextLine)
+          elsif nextLine[1] == head
+            head = nextLine[0]
+            wafer_object.push(nextLine[0])
+            @lines.delete(nextLine)
+          elsif nextLine[0] == tail
+            tail = nextLine[1]
+            wafer_object.unshift(nextLine[1])
+            @lines.delete(nextLine)
+          elsif nextLine[1] == tail
+            tail = nextLine[0]
+            wafer_object.unshift(nextLine[0])
+            @lines.delete(nextLine)
+          end
+        end
+      end  # loop do
+
+      if wafer_object[0] != wafer_object.last
+        if wafer_object[0].distance(wafer_object.last) < @closeGaps
+          puts("Closing loop in shape #{@wafer_objects.size + 1}")
+          wafer_object.push(Geom::Point3d.new(wafer_object[0].x,\
+                                              wafer_object[0].y,\
+                                              wafer_object[0].z))
+        end
+      end
+      @wafer_objects.push wafer_object
+    end  # while @lines.size > 0
 
     return "done isolate_part"
   end #isolate_part
@@ -405,6 +423,7 @@ class Wafer
   
   def draw_part
     # This draws out the outline of the identified objects.
+    Sketchup.set_status_text "Calculating Gcode: Drawing output", SB_VCB_VALUE
   
     @outputfile.puts()
   
@@ -447,14 +466,19 @@ class Wafer
   
   
     # draw outline of shape to be cut.  
+    puts("Draw shape outline to screen in red")
     @wafer_objects.each do |object|
-      #puts("#{object.size} points")
       point_previous = [nil,nil,nil]
       object.each do |point|
         #puts(@point)
 
         if point_previous[0]
-          new_line = entities.add_line [point_previous[0]+@offset_x,point_previous[1]+@offset_y,@height.mm+@offset_z], [point[0]+@offset_x,point[1]+@offset_y,@height.mm+@offset_z]
+          new_line = entities.add_line [point_previous[0]+@offset_x,\
+                                        point_previous[1]+@offset_y,\
+                                        @height.mm+@offset_z],\
+                                       [point[0]+@offset_x,\
+                                        point[1]+@offset_y,\
+                                        @height.mm+@offset_z]
           new_line.material = "red"
           new_line.layer = outline_layer
         end #if
@@ -464,6 +488,7 @@ class Wafer
     end #@wafer_objects.each
   
     # draw router path.
+    puts("Draw router path to screen in green and write gcode")
     @wafer_paths.each do |path|
       previous_point = nil
       if path[0] != path.last
@@ -472,7 +497,6 @@ class Wafer
 
       if path.length > 1
         @pos_z = @corner_rbt[2].to_mm + 1
-        #@outputfile.puts("G00 Z#{@pos_z} ( Rapid positioning to highest point +1mm )")
       end #if
 
       path.each do |point|
@@ -481,19 +505,22 @@ class Wafer
             if (point.x.to_mm != @pos_x) || (point.y.to_mm != @pos_y)
               @pos_z = @corner_rbt[2].to_mm + 1
               @outputfile.puts(
-                "G00 Z#{roundToPlaces(@pos_z, @decimalPlaces)} ( Rapid positioning to highest point +1mm )")
+                "G00 Z#{roundToPlaces(@pos_z, @decimalPlaces)} "\
+                "( Rapid positioning to highest point +1mm )")
             end #if point.x != @pos_x
             @pos_x = point.x.to_mm
             @pos_y = point.y.to_mm
             @outputfile.puts(
-              "G01 X#{roundToPlaces(@pos_x, @decimalPlaces)} Y#{roundToPlaces(@pos_y, @decimalPlaces)}")
+              "G01 X#{roundToPlaces(@pos_x, @decimalPlaces)} "\
+              "Y#{roundToPlaces(@pos_y, @decimalPlaces)}")
             @pos_z = @height
             @outputfile.puts("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces)}")
           else
             @pos_x = point.x.to_mm
             @pos_y = point.y.to_mm
             @outputfile.puts(
-              "G01 X#{roundToPlaces(@pos_x, @decimalPlaces)} Y#{roundToPlaces(@pos_y, @decimalPlaces)}")
+              "G01 X#{roundToPlaces(@pos_x, @decimalPlaces)} "\
+              "Y#{roundToPlaces(@pos_y, @decimalPlaces)}")
           end #if
 
           point = [point[0]+@offset_x,point[1]+@offset_y,@height.mm+@offset_z + 0.001]
@@ -511,9 +538,6 @@ class Wafer
             new_face.all_connected.each do |edge|
               edge.layer = path_layer
             end #new_face.all_connected.each
-
-
-            #new_edges.layer = path_layer
           end
 
           if previous_point
@@ -522,8 +546,18 @@ class Wafer
             lenv = Math.sqrt((xv*xv)+(yv*yv))
             xoffset =  - (yv*@mill_diamiter/lenv)
             yoffset =  + (xv*@mill_diamiter/lenv)
-            new_face = entities.add_face [point[0]+xoffset,point[1]+yoffset, @height.mm + 0.001], [point[0]-xoffset,point[1]-yoffset, @height.mm + 0.001], [previous_point[0]-xoffset,previous_point[1]-yoffset, @height.mm + 0.001], [previous_point[0]+xoffset,previous_point[1]+yoffset, @height.mm + 0.001]
-            #new_face.layer = path_layer
+            new_face = entities.add_face [point[0]+xoffset,\
+                                          point[1]+yoffset,\
+                                          @height.mm + 0.001],\
+                                         [point[0]-xoffset,\
+                                          point[1]-yoffset,\
+                                          @height.mm + 0.001],\
+                                         [previous_point[0]-xoffset,\
+                                          previous_point[1]-yoffset,\
+                                          @height.mm + 0.001],\
+                                         [previous_point[0]+xoffset,\
+                                          previous_point[1]+yoffset,\
+                                          @height.mm + 0.001]
             new_face.material = "green"
 
             # move rectangles to path layer.
@@ -532,21 +566,18 @@ class Wafer
             end #new_face.all_connected.each
 
           end #if previous_point
-
           previous_point = point
         end #if point
       end #@path.each do |point|
-
+    
     end #@wafer_paths.each do |path|
 
     return "done draw_part"
-
-
-
   end #draw_part
   
   
   def router_path
+    Sketchup.set_status_text "Calculating Gcode: Calculating router offset", SB_VCB_VALUE
 
     # Get "handles" to our model and the Entities collection it contains.
     model = Sketchup.active_model
@@ -555,13 +586,13 @@ class Wafer
     @wafer_paths=[]
 
     @wafer_objects.each do |object|
-      #puts("#{object.size} points")
-
       wafer_path=[]
 
       loop=nil
-      if object[0]==object.last
+      if object[0] == object.last
         loop=1
+      else
+        puts("Not loop #{object[0]} #{object.last}")
       end #if
 
       point_previous = [nil,nil,nil]
@@ -570,9 +601,7 @@ class Wafer
       last = (object.length) -1
 
       object.each do |point|
-
         if loop
-
           pos = object.index(point)
           if pos < last
             xv = point[0] - object[pos+1][0]
@@ -599,36 +628,17 @@ class Wafer
             x = xcenter + xoffset
             y = ycenter + yoffset      
 
-            #if Geom.point_in_polygon_2D([x,y,@height], object, true)
-            #  
-            #  xoffset = + (yv*@mill_diamiter/lenv)
-            #  yoffset = - (xv*@mill_diamiter/lenv)
-            #  x = xcenter + xoffset
-            #  y = ycenter + yoffset
-            #end #if
-
-
-            #centerpoint = Geom::Point3d.new (x,y,@height)
-            #line1 = [Geom::Point3d.new(@point_previous[0],@point_previous[1],@point_previous[2]), Geom::Point3d.new(@point[0],@point[1],@point[2])]
-            #line2 = [Geom::Point3d.new(@point[0],@point[1],@point[2]), Geom::Point3d.new(@object[pos+1][0],@object[pos+1][1],@object[pos+1][2])]
             line1 = line2
             line2 = [Geom::Point3d.new(x, y, @height.mm), Geom::Vector3d.new(xv,yv,0)]
 
             if point_previous[0] 
-
               centerpoint = Geom.intersect_line_line(line1,line2)
-              #centerpoint = Geom.closest_points(line1,line2)[0]
-
 
               if centerpoint
                 wafer_path.push(centerpoint)
               end #if centerpoint
             end #if @point_previous[0]
-
-
-
           end #if pos < last
-
         end #if loop
         point_previous = point
       end #@point.each
@@ -636,7 +646,5 @@ class Wafer
       @wafer_paths.push(wafer_path)
     end #@wafer_objects.each  
   end #router_path
-
-
   
 end
