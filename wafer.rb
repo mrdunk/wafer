@@ -3,6 +3,7 @@ require 'sketchup'
 @configKeys = ["cutDiamiter",\
                "cutDepth",\
                "decimalPlaces",\
+               "units",\
                "closeGaps",\
                "scriptMode",\
                "orientation",\
@@ -34,6 +35,7 @@ def loadConfig()
                   "closeGaps" => "0.0",\
                   "orientation" => "Stacked",\
                   "decimalPlaces" => "3",\
+                  "units" => "mm",\
                   "debug" => "false"}
 
   @configKeys.each do | key |
@@ -55,6 +57,7 @@ def menu()
                         "closeGaps" => "Close gaps in looped paths (mm)",\
                         "orientation" => "Preview orientation",\
                         "decimalPlaces" => "Gcode decimal places",\
+                        "units" => "Units to use in Gcode file",\
                         "debug" => "Enable debug pannel"}
   sizes = "0.0|"\
           "0.01|0.02|0.03|0.04|0.05|0.06|0.07|0.08|0.09|"\
@@ -71,6 +74,7 @@ def menu()
                  "closeGaps" => sizes,\
                  "orientation" => "Spread|Stacked",\
                  "decimalPlaces" => "0|1|2|3|4",\
+                 "units" => "mm|inch",\
                  "debug" => "true|false"}
   descriptions = []
   values = []
@@ -93,14 +97,13 @@ def menu()
 end 
 
 # Round floats down to a sane number of decimal places.
-def roundToPlaces(value, places)
-  return (value * (10 ** places.to_i)).round.to_f / (10 ** places.to_i)
-end
-
-def roundPointToPlaces(point, places)
-  return Geom::Point3d.new(roundToPlaces(point.x, places),\
-                           roundToPlaces(point.y, places),\
-                           roundToPlaces(point.z, places))
+def roundToPlaces(value, places, units)
+  if units == "mm"
+    value = value.to_mm
+  end
+  places = places.to_i
+  returnVal = ((value * (10 ** places)).round.to_f / (10 ** places))
+  return returnVal
 end
 
 
@@ -127,11 +130,12 @@ UI.menu("PlugIns").add_item("Wafer") {
       new_wafer.height = 0
       new_wafer.cut_depth = @config["cutDepth"]
       new_wafer.mill_diamiter = (@config["cutDiamiter"].to_f)/100
-      new_wafer.find_bounds
-      new_wafer.header  
       new_wafer.create_layers
       new_wafer.decimalPlaces = @config["decimalPlaces"]
+      new_wafer.units = @config["units"]
       new_wafer.closeGaps = @config["closeGaps"]
+      new_wafer.find_bounds
+      new_wafer.header  
 
       if @config["scriptMode"] == "Single"
         new_wafer.single
@@ -171,6 +175,12 @@ class Wafer
   def decimalPlaces
     @decimalPlaces
   end
+  def units=(units)
+    @units = units
+  end
+  def units
+    @units
+  end
   def out_file=(o)
     @out_file = o
   end
@@ -188,22 +198,27 @@ class Wafer
   def header
     @pos_x = 0
     @pos_y = 0
-    @pos_z = @corner_rbt.z.to_mm + 1 
+    @pos_z = @corner_rbt.z + 1 
 
     @outputfile = File.new( @out_file , "w" )
-    @outputfile.puts("G21 ( Unit of measure: mm )")
+    if @units == "mm"
+      @outputfile.puts("G21 ( Unit of measure: mm )")
+    else
+      @outputfile.puts("G20 ( Unit of measure: inches )")
+    end
     @outputfile.puts("G90 ( Absolute programming )")
     @outputfile.puts("M03 ( Spindle on [clockwise] )")
-    @outputfile.puts("G00 Z#{@pos_z} ( Rapid positioning to highest point )")
-
+    @outputfile.puts("G00 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)} "\
+                     "( Rapid positioning to highest point +1 )")
   end #header
 
   # Populate output file with gcode footer.
   def footer
-    @pos_z = @corner_rbt[2].to_mm + 1
+    @pos_z = @corner_rbt.z + 1
 
     @outputfile.puts("")
-    @outputfile.puts("G00 Z#{@pos_z} ( Rapid positioning to highest point +1mm )")
+    @outputfile.puts("G00 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)} "\
+                     "( Rapid positioning to highest point +1 )")
     @outputfile.puts("M05 ( Spindle stop )")
     @outputfile.puts("M02 ( End of program )")
 
@@ -223,7 +238,7 @@ class Wafer
   end #create_layers
 
   def single
-    @height = @corner_lfb.z.to_mm
+    @height = @corner_lfb.z
     puts(trace_outline)
     puts(isolate_part)
     puts(router_path)
@@ -237,28 +252,26 @@ class Wafer
     puts(isolate_part)
     puts(router_path)
 
-    @height = @corner_rbt.z.to_mm
+    @height = @corner_rbt.z
     thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
 
     while thickness > 0
       thickness -= @cut_depth.to_f
-      @height -= @cut_depth.to_f
+      @height -= @cut_depth.to_f.mm
 
       puts(draw_part)
-      #puts(@height)
     end
   
   end #def repeated_single
   
   def contour
-    @height = @corner_rbt.z.to_mm
+    @height = @corner_rbt.z
     thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
     while thickness >= 0
-      #puts(@height)
       thickness -= @cut_depth.to_f
-      @height -= @cut_depth.to_f
+      @height -= @cut_depth.to_f.mm
       # make sure we are not cutting below the bottom of the selected object.
-      if @height.mm < @corner_lfb.z
+      if @height < @corner_lfb.z
         #puts("h#{@height.mm}  c#{@corner_lfb.z}")
         @height = @corner_lfb.z.to_mm
       end #if
@@ -333,15 +346,15 @@ class Wafer
           if intersect
             if p1 == nil
               p1 = intersect
-            else
+            elsif intersect != p1
               p2 = intersect
+              break
             end
           end
         end
 
-        if p1 and p2
-          @lines.push [roundPointToPlaces(p1, @decimalPlaces),
-                       roundPointToPlaces(p2, @decimalPlaces)]
+        if p1 and p2 and p1 != p2
+          @lines.push [p1, p2]
           new_line = entities.add_line p1, p2
           new_line.layer = test_layer
         end
@@ -351,8 +364,6 @@ class Wafer
     end
     temparyGroup.erase!
 
-    #new_face=nil
-    #puts(@lines.length)  
     return "done trace_outline"
   end #trace_outline
   
@@ -402,6 +413,8 @@ class Wafer
             tail = nextLine[0]
             wafer_object.unshift(nextLine[0])
             @lines.delete(nextLine)
+          else
+            puts("Could not append line: #{nextLine}")
           end
         end
       end  # loop do
@@ -470,15 +483,14 @@ class Wafer
     @wafer_objects.each do |object|
       point_previous = [nil,nil,nil]
       object.each do |point|
-        #puts(@point)
 
         if point_previous[0]
-          new_line = entities.add_line [point_previous[0]+@offset_x,\
-                                        point_previous[1]+@offset_y,\
-                                        @height.mm+@offset_z],\
-                                       [point[0]+@offset_x,\
-                                        point[1]+@offset_y,\
-                                        @height.mm+@offset_z]
+          new_line = entities.add_line [point_previous[0] + @offset_x,\
+                                        point_previous[1] + @offset_y,\
+                                        @height + @offset_z],\
+                                       [point[0] + @offset_x,\
+                                        point[1] + @offset_y,\
+                                        @height + @offset_z]
           new_line.material = "red"
           new_line.layer = outline_layer
         end #if
@@ -496,34 +508,25 @@ class Wafer
       end #if
 
       if path.length > 1
-        @pos_z = @corner_rbt[2].to_mm + 1
+        # Move spindle to safe height.
+        @pos_z = @corner_rbt.z + 1
+        @outputfile.puts("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
       end #if
 
       path.each do |point|
         if point
+          @pos_x = point.x
+          @pos_y = point.y
+          @outputfile.puts("G01 X#{roundToPlaces(@pos_x, @decimalPlaces, @units)} "\
+                           "Y#{roundToPlaces(@pos_y, @decimalPlaces, @units)}")
           if (@height != @pos_z)
-            if (point.x.to_mm != @pos_x) || (point.y.to_mm != @pos_y)
-              @pos_z = @corner_rbt[2].to_mm + 1
-              @outputfile.puts(
-                "G00 Z#{roundToPlaces(@pos_z, @decimalPlaces)} "\
-                "( Rapid positioning to highest point +1mm )")
-            end #if point.x != @pos_x
-            @pos_x = point.x.to_mm
-            @pos_y = point.y.to_mm
-            @outputfile.puts(
-              "G01 X#{roundToPlaces(@pos_x, @decimalPlaces)} "\
-              "Y#{roundToPlaces(@pos_y, @decimalPlaces)}")
             @pos_z = @height
-            @outputfile.puts("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces)}")
-          else
-            @pos_x = point.x.to_mm
-            @pos_y = point.y.to_mm
-            @outputfile.puts(
-              "G01 X#{roundToPlaces(@pos_x, @decimalPlaces)} "\
-              "Y#{roundToPlaces(@pos_y, @decimalPlaces)}")
+            @outputfile.puts("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
           end #if
 
-          point = [point[0]+@offset_x,point[1]+@offset_y,@height.mm+@offset_z + 0.001]
+          point = [point[0] + @offset_x,\
+                   point[1] + @offset_y,\
+                   @height.to_mm + @offset_z + 0.001]
           new_edges = entities.add_circle point, vector2, @mill_diamiter
           new_face = entities.add_face(new_edges)
           if new_face
@@ -546,18 +549,18 @@ class Wafer
             lenv = Math.sqrt((xv*xv)+(yv*yv))
             xoffset =  - (yv*@mill_diamiter/lenv)
             yoffset =  + (xv*@mill_diamiter/lenv)
-            new_face = entities.add_face [point[0]+xoffset,\
-                                          point[1]+yoffset,\
-                                          @height.mm + 0.001],\
-                                         [point[0]-xoffset,\
-                                          point[1]-yoffset,\
-                                          @height.mm + 0.001],\
-                                         [previous_point[0]-xoffset,\
-                                          previous_point[1]-yoffset,\
-                                          @height.mm + 0.001],\
-                                         [previous_point[0]+xoffset,\
-                                          previous_point[1]+yoffset,\
-                                          @height.mm + 0.001]
+            new_face = entities.add_face [point[0] + xoffset,\
+                                          point[1] + yoffset,\
+                                          @height + 0.001],\
+                                         [point[0] - xoffset,\
+                                          point[1] - yoffset,\
+                                          @height + 0.001],\
+                                         [previous_point[0] - xoffset,\
+                                          previous_point[1] - yoffset,\
+                                          @height + 0.001],\
+                                         [previous_point[0] + xoffset,\
+                                          previous_point[1] + yoffset,\
+                                          @height + 0.001]
             new_face.material = "green"
 
             # move rectangles to path layer.
@@ -588,20 +591,20 @@ class Wafer
     @wafer_objects.each do |object|
       wafer_path=[]
 
-      loop=nil
-      if object[0] == object.last
-        loop=1
+      loop = (object[0] == object.last)
+      if loop
+        puts("Loop")
       else
-        puts("Not loop #{object[0]} #{object.last}")
+        puts("Not loop. Starts: #{object[0]} Ends: #{object.last}")
       end #if
 
-      point_previous = [nil,nil,nil]
-      line2 = [nil,nil]
-
+      line2 = nil
       last = (object.length) -1
 
-      object.each do |point|
-        if loop
+      # This logic only works for loops.
+      # ie, when the line starts and finishes in the same place.
+      if loop
+        object.each do |point|
           pos = object.index(point)
           if pos < last
             xv = point[0] - object[pos+1][0]
@@ -612,8 +615,8 @@ class Wafer
             lenv = Math.sqrt((xv*xv)+(yv*yv))
 
             outside_inside = 1
-            xoffset =  - (yv*@mill_diamiter/lenv) 
-            yoffset =  + (xv*@mill_diamiter/lenv) 
+            xoffset = -(yv * @mill_diamiter/lenv) 
+            yoffset = +(xv * @mill_diamiter/lenv) 
             x = xcenter + xoffset
             y = ycenter + yoffset      
 
@@ -623,25 +626,24 @@ class Wafer
               end #if
             end
 
-            xoffset =  - (yv*@mill_diamiter/lenv) * outside_inside
-            yoffset =  + (xv*@mill_diamiter/lenv) * outside_inside
+            xoffset = -(yv * @mill_diamiter/lenv) * outside_inside
+            yoffset = +(xv * @mill_diamiter/lenv) * outside_inside
             x = xcenter + xoffset
             y = ycenter + yoffset      
 
             line1 = line2
-            line2 = [Geom::Point3d.new(x, y, @height.mm), Geom::Vector3d.new(xv,yv,0)]
+            line2 = [Geom::Point3d.new(x, y, @height), Geom::Vector3d.new(xv, yv, 0)]
 
-            if point_previous[0] 
-              centerpoint = Geom.intersect_line_line(line1,line2)
-
+            if line1
+              centerpoint = Geom.intersect_line_line(line1, line2)
               if centerpoint
                 wafer_path.push(centerpoint)
               end #if centerpoint
-            end #if @point_previous[0]
+            end #if line1
+
           end #if pos < last
-        end #if loop
-        point_previous = point
-      end #@point.each
+        end #@point.each
+      end #if loop
 
       @wafer_paths.push(wafer_path)
     end #@wafer_objects.each  
