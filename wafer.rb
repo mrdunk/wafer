@@ -3,6 +3,7 @@ require 'sketchup'
 @configKeys = ["cutDiamiter",\
                "cutDepth",\
                "decimalPlaces",\
+               "minimumResolution",\
                "units",\
                "closeGaps",\
                "scriptMode",\
@@ -35,6 +36,7 @@ def loadConfig()
                   "closeGaps" => "0.0",\
                   "orientation" => "Stacked",\
                   "decimalPlaces" => "3",\
+                  "minimumResolution" => "0.001",\
                   "units" => "mm",\
                   "debug" => "false"}
 
@@ -57,6 +59,7 @@ def menu()
                         "closeGaps" => "Close gaps in looped paths (mm)",\
                         "orientation" => "Preview orientation",\
                         "decimalPlaces" => "Gcode decimal places",\
+                        "minimumResolution" => "Minimum movment size",\
                         "units" => "Units to use in Gcode file",\
                         "debug" => "Enable debug pannel"}
   sizes = "0.0|"\
@@ -74,6 +77,7 @@ def menu()
                  "closeGaps" => sizes,\
                  "orientation" => "Spread|Stacked",\
                  "decimalPlaces" => "0|1|2|3|4",\
+                 "minimumResolution" => "0.001|0.01|0.1|1|10",\
                  "units" => "mm|inch",\
                  "debug" => "true|false"}
   descriptions = []
@@ -125,27 +129,35 @@ UI.menu("PlugIns").add_item("Wafer") {
     puts("Writing to #{gcodeFile}")
     if gcodeFile
       new_wafer = Wafer.new
-      new_wafer.out_file = gcodeFile
-      new_wafer.preview_layout = @config["orientation"]
-      new_wafer.height = 0
-      new_wafer.cut_depth = @config["cutDepth"]
-      new_wafer.mill_diamiter = (@config["cutDiamiter"].to_f)/100
-      new_wafer.create_layers
-      new_wafer.decimalPlaces = @config["decimalPlaces"]
-      new_wafer.units = @config["units"]
-      new_wafer.closeGaps = @config["closeGaps"]
-      new_wafer.find_bounds
-      new_wafer.header  
+      if new_wafer.find_bounds == nil
+        Sketchup.set_status_text "", SB_VCB_VALUE
+        puts("No geometry selected")
+        UI.messagebox("No geometry selected", type = MB_OK)
+        return
+      else
+        new_wafer.out_file = gcodeFile
+        new_wafer.preview_layout = @config["orientation"]
+        new_wafer.height = 0
+        new_wafer.cut_depth = @config["cutDepth"]
+        new_wafer.mill_diamiter = (@config["cutDiamiter"].to_f)/100
+        new_wafer.create_layers
+        new_wafer.decimalPlaces = @config["decimalPlaces"]
+        new_wafer.minimumResolution = @config["minimumResolution"].to_f
+        new_wafer.units = @config["units"]
+        new_wafer.closeGaps = @config["closeGaps"]
 
-      if @config["scriptMode"] == "Single"
-        new_wafer.single
-      elsif @config["scriptMode"] == "Repeated single"
-        new_wafer.repeated_single
-      elsif @config["scriptMode"] == "Contour"
-        new_wafer.contour
-      end
+        new_wafer.header  
 
-      new_wafer.footer
+        if @config["scriptMode"] == "Single"
+          new_wafer.single
+        elsif @config["scriptMode"] == "Repeated single"
+          new_wafer.repeated_single
+        elsif @config["scriptMode"] == "Contour"
+          new_wafer.contour
+        end
+
+        new_wafer.footer
+      end #if new_wafer.find_bounds == nil
     end #if @gcodeFile
   end #if menu()
 
@@ -175,6 +187,12 @@ class Wafer
   def decimalPlaces
     @decimalPlaces
   end
+  def minimumResolution=(mr)
+    @minimumResolution = mr
+  end
+  def minimumResolution
+    @minimumResolution
+  end
   def units=(units)
     @units = units
   end
@@ -194,36 +212,49 @@ class Wafer
   attr_accessor :preview_layout
   attr_accessor :cut_depth
 
+  def writeGcode(line, flush=false)
+    if @outputfile == nil
+      puts("Opening file: #{@out_file}")
+      @outputfile = File.new( @out_file , "w" )
+      @gcodeContent = String.new("")
+    end
+    @gcodeContent.concat(line).concat("\n")
+
+    if flush or @gcodeContent.length > 10000
+      @outputfile.puts(@gcodeContent)
+    end
+  end
+
   # Populate output file with gcode header.
   def header
     @pos_x = 0
     @pos_y = 0
     @pos_z = @corner_rbt.z + 1 
 
-    @outputfile = File.new( @out_file , "w" )
     if @units == "mm"
-      @outputfile.puts("G21 ( Unit of measure: mm )")
+      writeGcode("G21 ( Unit of measure: mm )")
     else
-      @outputfile.puts("G20 ( Unit of measure: inches )")
+      writeGcode("G20 ( Unit of measure: inches )")
     end
-    @outputfile.puts("G90 ( Absolute programming )")
-    @outputfile.puts("M03 ( Spindle on [clockwise] )")
-    @outputfile.puts("G00 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)} "\
-                     "( Rapid positioning to highest point +1 )")
+    writeGcode("G90 ( Absolute programming )")
+    writeGcode("M03 ( Spindle on [clockwise] )")
+    writeGcode("G00 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)} "\
+               "( Rapid positioning to highest point +1 )")
   end #header
 
   # Populate output file with gcode footer.
   def footer
     @pos_z = @corner_rbt.z + 1
 
-    @outputfile.puts("")
-    @outputfile.puts("G00 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)} "\
+    writeGcode("")
+    writeGcode("G00 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)} "\
                      "( Rapid positioning to highest point +1 )")
-    @outputfile.puts("M05 ( Spindle stop )")
-    @outputfile.puts("M02 ( End of program )")
+    writeGcode("M05 ( Spindle stop )")
+    writeGcode("M02 ( End of program )")
 
-    @outputfile.puts("")
-    @outputfile.puts("( end )")
+    writeGcode("")
+    writeGcode("( end )", true)
+    
     @outputfile.close()
   end #footer
 
@@ -288,6 +319,10 @@ class Wafer
     model = Sketchup.active_model
     selection = model.selection
 
+    if selection == nil or selection[0] == nil
+      return
+    end
+
     # boundry of whole model
     @model_lfb = model.bounds.corner(0)
     @model_rbt = model.bounds.corner(7)
@@ -315,6 +350,8 @@ class Wafer
         @corner_rbt.z = entity.bounds.corner(7).z
       end
     end # selection.each do
+
+    return true
   end
 
   def trace_outline
@@ -432,13 +469,63 @@ class Wafer
 
     return "done isolate_part"
   end #isolate_part
-  
-  
+ 
+  # Draw a movement of the cutting head to screen. 
+  def draw_path_line(entities, path_layer, start, finish)
+    start = [start.x + @offset_x,\
+             start.y + @offset_y,\
+             @height.to_mm + @offset_z + 0.001]
+    finish = [finish.x + @offset_x,\
+             finish.y + @offset_y,\
+             @height.to_mm + @offset_z + 0.001]
+    
+    vector = Geom::Vector3d.new(0,0,1).normalize!
+    new_edges = entities.add_circle start, vector, @mill_diamiter
+    new_face = entities.add_face(new_edges)
+    if new_face
+      new_face.layer = path_layer
+      new_face.material = "green"
+
+      # move circles to path layer.
+      new_edges.each do |edge|
+        edge.layer = path_layer
+      end #new_edges.each
+
+      new_face.all_connected.each do |edge|
+        edge.layer = path_layer
+      end #new_face.all_connected.each
+    end
+
+    xv = start.x - finish.x
+    yv = start.y - finish.y
+    lenv = Math.sqrt((xv*xv)+(yv*yv))
+    xoffset =  - (yv*@mill_diamiter/lenv)
+    yoffset =  + (xv*@mill_diamiter/lenv)
+    new_face = entities.add_face [start.x + xoffset,\
+                                  start.y + yoffset,\
+                                  @height + 0.001],\
+                                  [start.x - xoffset,\
+                                   start.y - yoffset,\
+                                   @height + 0.001],\
+                                   [finish.x - xoffset,\
+                                    finish.y - yoffset,\
+                                    @height + 0.001],\
+                                    [finish.x + xoffset,\
+                                     finish.y + yoffset,\
+                                     @height + 0.001]
+    new_face.material = "green"
+
+    # move rectangles to path layer.
+    new_face.all_connected.each do |edge|
+      edge.layer = path_layer
+    end #new_face.all_connected.each
+  end
+
   def draw_part
     # This draws out the outline of the identified objects.
     Sketchup.set_status_text "Calculating Gcode: Drawing output", SB_VCB_VALUE
   
-    @outputfile.puts()
+    writeGcode("")
   
     if @preview_layout == "Stacked"
     unless @offset_y
@@ -467,8 +554,6 @@ class Wafer
     layers = model.layers
     outline_layer = layers["outline"]
     path_layer = layers["path"]
-    vector = Geom::Vector3d.new 0,0,1
-    vector2 = vector.normalize!
 
     puts("Drawing #{@wafer_objects.size} objects")
   
@@ -496,13 +581,11 @@ class Wafer
         end #if
         point_previous = point
       end #@point.each
-
     end #@wafer_objects.each
   
     # draw router path.
     puts("Draw router path to screen in green and write gcode")
     @wafer_paths.each do |path|
-      previous_point = nil
       if path[0] != path.last
         path.push path[0]
       end #if
@@ -510,69 +593,33 @@ class Wafer
       if path.length > 1
         # Move spindle to safe height.
         @pos_z = @corner_rbt.z + 1
-        @outputfile.puts("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
+        writeGcode("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
       end #if
 
+      previous_point = nil
       path.each do |point|
-        if point
+        # Make sure there has been at least some movement.
+        if previous_point and\
+            ((point.x - previous_point.x).abs > @minimumResolution or\
+             (point.y - previous_point.y).abs > @minimumResolution)
           @pos_x = point.x
           @pos_y = point.y
-          @outputfile.puts("G01 X#{roundToPlaces(@pos_x, @decimalPlaces, @units)} "\
+          writeGcode("G01 X#{roundToPlaces(@pos_x, @decimalPlaces, @units)} "\
                            "Y#{roundToPlaces(@pos_y, @decimalPlaces, @units)}")
           if (@height != @pos_z)
             @pos_z = @height
-            @outputfile.puts("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
+            writeGcode("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
           end #if
 
-          point = [point[0] + @offset_x,\
-                   point[1] + @offset_y,\
-                   @height.to_mm + @offset_z + 0.001]
-          new_edges = entities.add_circle point, vector2, @mill_diamiter
-          new_face = entities.add_face(new_edges)
-          if new_face
-            new_face.layer = path_layer
-            new_face.material = "green"
-
-            # move circles to path layer.
-            new_edges.each do |edge|
-              edge.layer = path_layer
-            end #new_edges.all_connected.each
-
-            new_face.all_connected.each do |edge|
-              edge.layer = path_layer
-            end #new_face.all_connected.each
-          end
-
-          if previous_point
-            xv = point[0] - previous_point[0]
-            yv = point[1] - previous_point[1]
-            lenv = Math.sqrt((xv*xv)+(yv*yv))
-            xoffset =  - (yv*@mill_diamiter/lenv)
-            yoffset =  + (xv*@mill_diamiter/lenv)
-            new_face = entities.add_face [point[0] + xoffset,\
-                                          point[1] + yoffset,\
-                                          @height + 0.001],\
-                                         [point[0] - xoffset,\
-                                          point[1] - yoffset,\
-                                          @height + 0.001],\
-                                         [previous_point[0] - xoffset,\
-                                          previous_point[1] - yoffset,\
-                                          @height + 0.001],\
-                                         [previous_point[0] + xoffset,\
-                                          previous_point[1] + yoffset,\
-                                          @height + 0.001]
-            new_face.material = "green"
-
-            # move rectangles to path layer.
-            new_face.all_connected.each do |edge|
-              edge.layer = path_layer
-            end #new_face.all_connected.each
-
-          end #if previous_point
+          draw_path_line(entities, path_layer, point, previous_point)
           previous_point = point
-        end #if point
+        end #if (point.x - previous_point.x).abs > 0.01....
+        if previous_point == nil
+          # First time through this loop.
+          previous_point = point
+        end
       end #@path.each do |point|
-    
+
     end #@wafer_paths.each do |path|
 
     return "done draw_part"
