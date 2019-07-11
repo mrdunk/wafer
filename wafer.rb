@@ -270,11 +270,21 @@ class Wafer
 
   def single
     @height = @corner_lfb.z
+    timeBegin = Time.now
     puts(trace_outline)
+    timeOutline = Time.now
     puts(isolate_part)
+    timeIsolate = Time.now
     puts(router_path)
+    timeRoute = Time.now
     puts(draw_part)
+    timeEnd = Time.now
 
+    puts("Outline:\t#{timeOutline - timeBegin}\n"\
+         "Isolate:\t#{timeIsolate - timeOutline}\n"\
+         "Route:  \t#{timeRoute - timeIsolate}\n"\
+         "Gcode:  \t#{timeEnd - timeRoute}\n"\
+         "Total:  \t#{timeEnd - timeBegin} seconds")
     return
   end #def Single
 
@@ -323,11 +333,11 @@ class Wafer
       return
     end
 
-    # boundry of whole model
+    # boundary of whole model
     @model_lfb = model.bounds.corner(0)
     @model_rbt = model.bounds.corner(7)
 
-    # boundry of selection
+    # boundary of selection
     @corner_lfb = selection[0].bounds.corner(0)
     @corner_rbt = selection[0].bounds.corner(0)
     selection.each do |entity| 
@@ -355,7 +365,7 @@ class Wafer
   end
 
   def trace_outline
-    Sketchup.set_status_text "Calculating Gcode: Finding faces", SB_VCB_VALUE
+    Sketchup.set_status_text "Outline", SB_VCB_VALUE
     # Get "handles" to our model and the Entities collection it contains.
     model = Sketchup.active_model
     selection = model.selection
@@ -390,7 +400,7 @@ class Wafer
           end
         end
 
-        if p1 and p2 and p1 != p2
+        if p1 and p2
           @lines.push [p1, p2]
           new_line = entities.add_line p1, p2
           new_line.layer = test_layer
@@ -414,7 +424,7 @@ class Wafer
     # The code is quicker if the @wafer_object is a loop (ie, finishes at the
     # same physical point it starts at)
     # but the code will work if you only run it on single faces as well.
-    Sketchup.set_status_text "Calculating Gcode: Sanitizing shapes", SB_VCB_VALUE
+    Sketchup.set_status_text "Isolate", SB_VCB_VALUE
     @wafer_objects = []
     wafer_object = []
 
@@ -523,7 +533,7 @@ class Wafer
 
   def draw_part
     # This draws out the outline of the identified objects.
-    Sketchup.set_status_text "Calculating Gcode: Drawing output", SB_VCB_VALUE
+    Sketchup.set_status_text "Write gcode", SB_VCB_VALUE
   
     writeGcode("")
   
@@ -565,7 +575,11 @@ class Wafer
   
     # draw outline of shape to be cut.  
     puts("Draw shape outline to screen in red")
+    count = 1
     @wafer_objects.each do |object|
+      Sketchup.set_status_text "Show routing: #{count}/#{@wafer_objects.length}", SB_VCB_VALUE
+      count += 1
+
       point_previous = [nil,nil,nil]
       object.each do |point|
 
@@ -585,7 +599,11 @@ class Wafer
   
     # draw router path.
     puts("Draw router path to screen in green and write gcode")
+    count = 1
     @wafer_paths.each do |path|
+      Sketchup.set_status_text "Write gcode: #{count}/#{@wafer_paths.length}", SB_VCB_VALUE
+      count += 1
+
       if path[0] != path.last
         path.push path[0]
       end #if
@@ -627,7 +645,7 @@ class Wafer
   
   
   def router_path
-    Sketchup.set_status_text "Calculating Gcode: Calculating router offset", SB_VCB_VALUE
+    Sketchup.set_status_text "Route", SB_VCB_VALUE
 
     # Get "handles" to our model and the Entities collection it contains.
     model = Sketchup.active_model
@@ -637,6 +655,8 @@ class Wafer
 
     @wafer_objects.each do |object|
       wafer_path=[]
+      Sketchup.set_status_text "Route: #{wafer_path.length}/"\
+                               "#{@wafer_objects.length}", SB_VCB_VALUE
 
       loop = (object[0] == object.last)
       if loop
