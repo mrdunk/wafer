@@ -222,6 +222,7 @@ class Wafer
 
     if flush or @gcodeContent.length > 10000
       @outputfile.puts(@gcodeContent)
+      @gcodeContent = String.new("")
     end
   end
 
@@ -393,7 +394,8 @@ class Wafer
           if intersect
             if p1 == nil
               p1 = intersect
-            elsif intersect != p1
+            #elsif intersect != p1
+            else
               p2 = intersect
               break
             end
@@ -577,7 +579,7 @@ class Wafer
     puts("Draw shape outline to screen in red")
     count = 1
     @wafer_objects.each do |object|
-      Sketchup.set_status_text "Show routing: #{count}/#{@wafer_objects.length}", SB_VCB_VALUE
+      Sketchup.set_status_text "Show outline: #{count}/#{@wafer_objects.length}", SB_VCB_VALUE
       count += 1
 
       point_previous = [nil,nil,nil]
