@@ -1,3 +1,5 @@
+@@version = 'v0.2.8'
+
 require 'sketchup'
 
 @configKeys = ["cutDiamiter",\
@@ -138,8 +140,8 @@ UI.menu("PlugIns").add_item("Wafer") {
         new_wafer.out_file = gcodeFile
         new_wafer.preview_layout = @config["orientation"]
         new_wafer.height = 0
-        new_wafer.cut_depth = @config["cutDepth"]
-        new_wafer.mill_diamiter = (@config["cutDiamiter"].to_f)/100
+        new_wafer.cutDepth = @config["cutDepth"]
+        new_wafer.cutDiamiter = (@config["cutDiamiter"].to_f)/100
         new_wafer.create_layers
         new_wafer.decimalPlaces = @config["decimalPlaces"]
         new_wafer.minimumResolution = @config["minimumResolution"].to_f
@@ -175,11 +177,11 @@ class Wafer
   def height
     @height
   end
-  def mill_diamiter=(d)
-    @mill_diamiter = d
+  def cutDiamiter=(d)
+    @cutDiamiter = d
   end
-  def mill_diamiter
-    @mill_diamiter
+  def cutDiamiter
+    @cutDiamiter
   end
   def decimalPlaces=(dp)
     @decimalPlaces = dp
@@ -210,7 +212,7 @@ class Wafer
   end
 
   attr_accessor :preview_layout
-  attr_accessor :cut_depth
+  attr_accessor :cutDepth
 
   def writeGcode(line, flush=false)
     if @outputfile == nil
@@ -286,6 +288,15 @@ class Wafer
          "Route:  \t#{timeRoute - timeIsolate}\n"\
          "Gcode:  \t#{timeEnd - timeRoute}\n"\
          "Total:  \t#{timeEnd - timeBegin} seconds")
+
+    puts("cutDiamiter:        #{@cutDiamiter}\n"\
+         "cutDepth:           #{@cutDepth}\n"\
+         "decimalPlaces:      #{@decimalPlaces}\n"\
+         "minimumResolution:  #{@minimumResolution}\n"\
+         "units:              #{@units}\n"\
+         "closeGaps:          #{@closeGaps}\n"\
+         "version:            #{@@version}")
+
     return
   end #def Single
 
@@ -298,8 +309,8 @@ class Wafer
     thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
 
     while thickness > 0
-      thickness -= @cut_depth.to_f
-      @height -= @cut_depth.to_f.mm
+      thickness -= @cutDepth.to_f
+      @height -= @cutDepth.to_f.mm
 
       puts(draw_part)
     end
@@ -310,8 +321,8 @@ class Wafer
     @height = @corner_rbt.z
     thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
     while thickness >= 0
-      thickness -= @cut_depth.to_f
-      @height -= @cut_depth.to_f.mm
+      thickness -= @cutDepth.to_f
+      @height -= @cutDepth.to_f.mm
       # make sure we are not cutting below the bottom of the selected object.
       if @height < @corner_lfb.z
         #puts("h#{@height.mm}  c#{@corner_lfb.z}")
@@ -482,8 +493,20 @@ class Wafer
     return "done isolate_part"
   end #isolate_part
  
+  # Draw a movement of the cutting head to gcode file.
+  def draw_path_gcode(point)
+    @pos_x = point.x
+    @pos_y = point.y
+    writeGcode("G01 X#{roundToPlaces(@pos_x, @decimalPlaces, @units)} "\
+               "Y#{roundToPlaces(@pos_y, @decimalPlaces, @units)}")
+    if (@height != @pos_z)
+      @pos_z = @height
+      writeGcode("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
+    end #if
+  end
+
   # Draw a movement of the cutting head to screen. 
-  def draw_path_line(entities, path_layer, start, finish)
+  def draw_path_screen(entities, path_layer, start, finish)
     start = [start.x + @offset_x,\
              start.y + @offset_y,\
              @height.to_mm + @offset_z + 0.001]
@@ -492,7 +515,7 @@ class Wafer
              @height.to_mm + @offset_z + 0.001]
     
     vector = Geom::Vector3d.new(0,0,1).normalize!
-    new_edges = entities.add_circle start, vector, @mill_diamiter
+    new_edges = entities.add_circle start, vector, @cutDiamiter
     new_face = entities.add_face(new_edges)
     if new_face
       new_face.layer = path_layer
@@ -511,8 +534,8 @@ class Wafer
     xv = start.x - finish.x
     yv = start.y - finish.y
     lenv = Math.sqrt((xv*xv)+(yv*yv))
-    xoffset =  - (yv*@mill_diamiter/lenv)
-    yoffset =  + (xv*@mill_diamiter/lenv)
+    xoffset =  - (yv*@cutDiamiter/lenv)
+    yoffset =  + (xv*@cutDiamiter/lenv)
     new_face = entities.add_face [start.x + xoffset,\
                                   start.y + yoffset,\
                                   @height + 0.001],\
@@ -610,7 +633,7 @@ class Wafer
         path.push path[0]
       end #if
 
-      if path.length > 1
+      if path.length
         # Move spindle to safe height.
         @pos_z = @corner_rbt.z + 1
         writeGcode("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
@@ -622,20 +645,13 @@ class Wafer
         if previous_point and\
             ((point.x - previous_point.x).abs > @minimumResolution or\
              (point.y - previous_point.y).abs > @minimumResolution)
-          @pos_x = point.x
-          @pos_y = point.y
-          writeGcode("G01 X#{roundToPlaces(@pos_x, @decimalPlaces, @units)} "\
-                           "Y#{roundToPlaces(@pos_y, @decimalPlaces, @units)}")
-          if (@height != @pos_z)
-            @pos_z = @height
-            writeGcode("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
-          end #if
-
-          draw_path_line(entities, path_layer, point, previous_point)
+          draw_path_gcode(point)
+          draw_path_screen(entities, path_layer, point, previous_point)
           previous_point = point
         end #if (point.x - previous_point.x).abs > 0.01....
         if previous_point == nil
           # First time through this loop.
+          draw_path_gcode(point)
           previous_point = point
         end
       end #@path.each do |point|
@@ -684,8 +700,8 @@ class Wafer
             lenv = Math.sqrt((xv*xv)+(yv*yv))
 
             outside_inside = 1
-            xoffset = -(yv * @mill_diamiter/lenv) 
-            yoffset = +(xv * @mill_diamiter/lenv) 
+            xoffset = -(yv * @cutDiamiter/lenv) 
+            yoffset = +(xv * @cutDiamiter/lenv) 
             x = xcenter + xoffset
             y = ycenter + yoffset      
 
@@ -695,8 +711,8 @@ class Wafer
               end #if
             end
 
-            xoffset = -(yv * @mill_diamiter/lenv) * outside_inside
-            yoffset = +(xv * @mill_diamiter/lenv) * outside_inside
+            xoffset = -(yv * @cutDiamiter/lenv) * outside_inside
+            yoffset = +(xv * @cutDiamiter/lenv) * outside_inside
             x = xcenter + xoffset
             y = ycenter + yoffset      
 
