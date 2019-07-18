@@ -1,4 +1,4 @@
-@@version = 'v0.2.8'
+@@version = 'v0.2.9'
 
 require 'sketchup'
 
@@ -10,6 +10,7 @@ require 'sketchup'
                "closeGaps",\
                "scriptMode",\
                "orientation",\
+               "displayPath",\
                "debug"]
 @config = {}
 
@@ -37,6 +38,7 @@ def loadConfig()
                   "cutDepth" => "0.5",\
                   "closeGaps" => "0.0",\
                   "orientation" => "Stacked",\
+                  "displayPath" => "yes",\
                   "decimalPlaces" => "3",\
                   "minimumResolution" => "0.001",\
                   "units" => "mm",\
@@ -60,6 +62,7 @@ def menu()
                         "cutDepth" => "Depth of cut? (mm)",\
                         "closeGaps" => "Close gaps in looped paths (mm)",\
                         "orientation" => "Preview orientation",\
+                        "displayPath" => "Display gcode path (slower)",\
                         "decimalPlaces" => "Gcode decimal places",\
                         "minimumResolution" => "Minimum movment size",\
                         "units" => "Units to use in Gcode file",\
@@ -78,6 +81,7 @@ def menu()
                  "cutDepth" => sizes,\
                  "closeGaps" => sizes,\
                  "orientation" => "Spread|Stacked",\
+                 "displayPath" => "yes|no",\
                  "decimalPlaces" => "0|1|2|3|4",\
                  "minimumResolution" => "0.001|0.01|0.1|1|10",\
                  "units" => "mm|inch",\
@@ -147,6 +151,7 @@ UI.menu("PlugIns").add_item("Wafer") {
         new_wafer.minimumResolution = @config["minimumResolution"].to_f
         new_wafer.units = @config["units"]
         new_wafer.closeGaps = @config["closeGaps"]
+        new_wafer.displayPath = @config["displayPath"]
 
         new_wafer.header  
 
@@ -210,9 +215,17 @@ class Wafer
   def closeGaps=(cg)
     @closeGaps = cg.to_f
   end
+  def displayPath=(dp)
+    @displayPath = (dp == "yes")
+  end
 
   attr_accessor :preview_layout
   attr_accessor :cutDepth
+
+  def initialize
+    @model = Sketchup.active_model
+    @selection = @model.selection
+  end
 
   def writeGcode(line, flush=false)
     if @outputfile == nil
@@ -263,12 +276,10 @@ class Wafer
 
   def create_layers
     # here we create some separate layers to display our router paths on.
-    model = Sketchup.active_model
-    layers = model.layers
+    layers = @model.layers
     # happily it does not seem to matter if we try to create a layer that already exists.
     outline_layer = layers.add "outline"
     path_layer = layers.add "path"
-    test_layer = layers.add "test"
   end #create_layers
 
   def single
@@ -295,6 +306,7 @@ class Wafer
          "minimumResolution:  #{@minimumResolution}\n"\
          "units:              #{@units}\n"\
          "closeGaps:          #{@closeGaps}\n"\
+         "displayPath:        #{@displayPath}\n"\
          "version:            #{@@version}")
 
     return
@@ -305,12 +317,12 @@ class Wafer
     puts(isolate_part)
     puts(router_path)
 
-    @height = @corner_rbt.z
+    @height = @corner_rbt.z.to_mm
     thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
 
     while thickness > 0
       thickness -= @cutDepth.to_f
-      @height -= @cutDepth.to_f.mm
+      @height -= @cutDepth.to_f
 
       puts(draw_part)
     end
@@ -318,41 +330,32 @@ class Wafer
   end #def repeated_single
   
   def contour
-    @height = @corner_rbt.z
-    thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
-    while thickness >= 0
-      thickness -= @cutDepth.to_f
-      @height -= @cutDepth.to_f.mm
-      # make sure we are not cutting below the bottom of the selected object.
-      if @height < @corner_lfb.z
-        #puts("h#{@height.mm}  c#{@corner_lfb.z}")
-        @height = @corner_lfb.z.to_mm
-      end #if
+    @height = @corner_rbt.z.to_mm
+    puts("@height: #{@height}")
+    while @height > 0
+      @height -= @cutDepth.to_f
+      puts("@height: #{@height}")
       puts(trace_outline)
       puts(isolate_part)
       puts(router_path)
       puts(draw_part)
     end
   
-  end #contor
+  end #contour
 
   def find_bounds
-    # Get "handles" to our model and the Entities collection it contains.
-    model = Sketchup.active_model
-    selection = model.selection
-
-    if selection == nil or selection[0] == nil
+    if @selection == nil or @selection[0] == nil
       return
     end
 
     # boundary of whole model
-    @model_lfb = model.bounds.corner(0)
-    @model_rbt = model.bounds.corner(7)
+    @model_lfb = @model.bounds.corner(0)
+    @model_rbt = @model.bounds.corner(7)
 
     # boundary of selection
-    @corner_lfb = selection[0].bounds.corner(0)
-    @corner_rbt = selection[0].bounds.corner(0)
-    selection.each do |entity| 
+    @corner_lfb = @selection[0].bounds.corner(0)
+    @corner_rbt = @selection[0].bounds.corner(0)
+    @selection.each do |entity| 
       if entity.bounds.corner(0).x < @corner_lfb.x
         @corner_lfb.x = entity.bounds.corner(0).x
       end
@@ -371,7 +374,7 @@ class Wafer
       if entity.bounds.corner(7).z > @corner_rbt.z
         @corner_rbt.z = entity.bounds.corner(7).z
       end
-    end # selection.each do
+    end # @selection.each do
 
     return true
   end
@@ -379,11 +382,7 @@ class Wafer
   def trace_outline
     Sketchup.set_status_text "Outline", SB_VCB_VALUE
     # Get "handles" to our model and the Entities collection it contains.
-    model = Sketchup.active_model
-    selection = model.selection
-    entities = model.entities
-    layers = model.layers
-    test_layer = layers["test"]
+    entities = @model.entities
 
     p1=nil
     p2=nil
@@ -398,25 +397,43 @@ class Wafer
                                   [@corner_rbt[0]+0.1, @corner_rbt[1]+0.1, @height.mm],\
                                   [@corner_lfb[0]-0.1, @corner_rbt[1]+0.1, @height.mm]
 
-    selection.each do |entity| 
+    @selection.each do |entity| 
       if entity.typename == "Face"
-        entity.edges.each do |edge|
-          intersect = Geom.intersect_line_plane(edge.line, new_face.plane)
-          if intersect
+        face = entity
+        face.edges.each do |edge|
+          point = Geom.intersect_line_plane(edge.line, new_face.plane)
+          if point and\
+              (face.classify_point(point) == Sketchup::Face::PointOnVertex or\
+               face.classify_point(point) == Sketchup::Face::PointOnEdge or\
+               face.classify_point(point) == Sketchup::Face::PointInside)
             if p1 == nil
-              p1 = intersect
-            #elsif intersect != p1
-            else
-              p2 = intersect
+              p1 = point
+            elsif point != p1
+              p2 = point
               break
             end
           end
         end
+        #intersect = Geom.intersect_plane_plane(new_face.plane, face.plane)
+        #if intersect
+        #  puts("intersect: #{intersect}")
+        #  face.edges.each do |edge|
+        #    point = Geom.intersect_line_line(intersect, edge.line)
+        #    if point
+        #      puts("  point: #{point}  #{face.classify_point(point)}  not: #{Sketchup::Face::PointNotOnPlane}")
+        #    end
+        #    if point and (face.classify_point(point) == Sketchup::Face::PointOnVertex or face.classify_point(point) == Sketchup::Face::PointOnEdge)
+        #      if p1 == nil
+        #        p1 = point
+        #      elsif point != p1
+        #        p2 = point
+        #      end
+        #    end
+        #  end
+        #end
 
         if p1 and p2
           @lines.push [p1, p2]
-          new_line = entities.add_line p1, p2
-          new_line.layer = test_layer
         end
         p1 = nil
         p2 = nil
@@ -506,20 +523,25 @@ class Wafer
   end
 
   # Draw a movement of the cutting head to screen. 
-  def draw_path_screen(entities, path_layer, start, finish)
+  def draw_path_screen(entities, path_layer, start, finish, colour="green")
+    if @displayPath == false
+      return
+    end
+
     start = [start.x + @offset_x,\
              start.y + @offset_y,\
-             @height.to_mm + @offset_z + 0.001]
+             @height.mm + @offset_z + 0.001]
     finish = [finish.x + @offset_x,\
              finish.y + @offset_y,\
-             @height.to_mm + @offset_z + 0.001]
+             @height.mm + @offset_z + 0.001]
     
     vector = Geom::Vector3d.new(0,0,1).normalize!
     new_edges = entities.add_circle start, vector, @cutDiamiter
     new_face = entities.add_face(new_edges)
     if new_face
       new_face.layer = path_layer
-      new_face.material = "green"
+      new_face.material = colour
+      new_face.back_material = colour
 
       # move circles to path layer.
       new_edges.each do |edge|
@@ -538,17 +560,18 @@ class Wafer
     yoffset =  + (xv*@cutDiamiter/lenv)
     new_face = entities.add_face [start.x + xoffset,\
                                   start.y + yoffset,\
-                                  @height + 0.001],\
+                                  @height.mm + 0.001],\
                                   [start.x - xoffset,\
                                    start.y - yoffset,\
-                                   @height + 0.001],\
+                                   @height.mm + 0.001],\
                                    [finish.x - xoffset,\
                                     finish.y - yoffset,\
-                                    @height + 0.001],\
+                                    @height.mm + 0.001],\
                                     [finish.x + xoffset,\
                                      finish.y + yoffset,\
-                                     @height + 0.001]
-    new_face.material = "green"
+                                     @height.mm + 0.001]
+    new_face.material = colour
+    new_face.back_material = colour
 
     # move rectangles to path layer.
     new_face.all_connected.each do |edge|
@@ -583,10 +606,8 @@ class Wafer
 
     end #if @preview_layout
 
-    # Get "handles" to our model and the Entities collection it contains.
-    model = Sketchup.active_model
-    entities = model.entities
-    layers = model.layers
+    entities = @model.entities
+    layers = @model.layers
     outline_layer = layers["outline"]
     path_layer = layers["path"]
 
@@ -596,7 +617,6 @@ class Wafer
     if @height.mm < @corner_lfb.z
       @height = @corner_lfb.z.to_mm
     end #if
-  
   
     # draw outline of shape to be cut.  
     puts("Draw shape outline to screen in red")
@@ -611,10 +631,10 @@ class Wafer
         if point_previous[0]
           new_line = entities.add_line [point_previous[0] + @offset_x,\
                                         point_previous[1] + @offset_y,\
-                                        @height + @offset_z],\
+                                        @height.mm + @offset_z],\
                                        [point[0] + @offset_x,\
                                         point[1] + @offset_y,\
-                                        @height + @offset_z]
+                                        @height.mm + @offset_z]
           new_line.material = "red"
           new_line.layer = outline_layer
         end #if
@@ -639,23 +659,25 @@ class Wafer
         writeGcode("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
       end #if
 
-      previous_point = nil
+      previous_point = path.last
       path.each do |point|
         # Make sure there has been at least some movement.
         if previous_point and\
-            ((point.x - previous_point.x).abs > @minimumResolution or\
-             (point.y - previous_point.y).abs > @minimumResolution)
+            ((point.x.to_mm - previous_point.x.to_mm).abs > @minimumResolution or\
+             (point.y.to_mm - previous_point.y.to_mm).abs > @minimumResolution)
           draw_path_gcode(point)
-          draw_path_screen(entities, path_layer, point, previous_point)
+          draw_path_screen(entities, path_layer, previous_point, point)
           previous_point = point
-        end #if (point.x - previous_point.x).abs > 0.01....
-        if previous_point == nil
-          # First time through this loop.
-          draw_path_gcode(point)
-          previous_point = point
-        end
+        end #if previous_point and...
       end #@path.each do |point|
-
+      if previous_point != path.last
+        # The length of this last path element can be less than @minimumResolution
+        # in length.
+        # While this is not ideal, let's see if it's an issue before implementing
+        # a complicated fix.
+        draw_path_gcode(path.last)
+        draw_path_screen(entities, path_layer, previous_point, path.last, "blue")
+      end
     end #@wafer_paths.each do |path|
 
     return "done draw_part"
@@ -665,9 +687,7 @@ class Wafer
   def router_path
     Sketchup.set_status_text "Route", SB_VCB_VALUE
 
-    # Get "handles" to our model and the Entities collection it contains.
-    model = Sketchup.active_model
-    entities = model.entities
+    entities = @model.entities
 
     @wafer_paths=[]
 
