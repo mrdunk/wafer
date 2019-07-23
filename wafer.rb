@@ -1,4 +1,4 @@
-@@version = 'v0.2.8'
+@@version = 'v0.2.10'
 
 require 'sketchup'
 
@@ -140,8 +140,8 @@ UI.menu("PlugIns").add_item("Wafer") {
         new_wafer.out_file = gcodeFile
         new_wafer.preview_layout = @config["orientation"]
         new_wafer.height = 0
-        new_wafer.cutDepth = @config["cutDepth"]
-        new_wafer.cutDiamiter = (@config["cutDiamiter"].to_f)/100
+        new_wafer.cutDepth = (@config["cutDepth"].to_f)
+        new_wafer.cutDiamiter = (@config["cutDiamiter"].to_f.mm)
         new_wafer.create_layers
         new_wafer.decimalPlaces = @config["decimalPlaces"]
         new_wafer.minimumResolution = @config["minimumResolution"].to_f
@@ -289,10 +289,10 @@ class Wafer
          "Gcode:  \t#{timeEnd - timeRoute}\n"\
          "Total:  \t#{timeEnd - timeBegin} seconds")
 
-    puts("cutDiamiter:        #{@cutDiamiter}\n"\
-         "cutDepth:           #{@cutDepth}\n"\
+    puts("cutDiamiter:        #{@cutDiamiter.to_mm}mm\n"\
+         "cutDepth:           #{@cutDepth}mm\n"\
          "decimalPlaces:      #{@decimalPlaces}\n"\
-         "minimumResolution:  #{@minimumResolution}\n"\
+         "minimumResolution:  #{@minimumResolution.to_mm}mm\n"\
          "units:              #{@units}\n"\
          "closeGaps:          #{@closeGaps}\n"\
          "version:            #{@@version}")
@@ -309,8 +309,8 @@ class Wafer
     thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
 
     while thickness > 0
-      thickness -= @cutDepth.to_f
-      @height -= @cutDepth.to_f.mm
+      thickness -= @cutDepth
+      @height -= @cutDepth.mm
 
       puts(draw_part)
     end
@@ -321,8 +321,8 @@ class Wafer
     @height = @corner_rbt.z
     thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
     while thickness >= 0
-      thickness -= @cutDepth.to_f
-      @height -= @cutDepth.to_f.mm
+      thickness -= @cutDepth
+      @height -= @cutDepth.mm
       # make sure we are not cutting below the bottom of the selected object.
       if @height < @corner_lfb.z
         #puts("h#{@height.mm}  c#{@corner_lfb.z}")
@@ -514,12 +514,12 @@ class Wafer
              finish.y + @offset_y,\
              @height.to_mm + @offset_z + 0.001]
     
-    vector = Geom::Vector3d.new(0,0,1).normalize!
+    vector = Geom::Vector3d.new(0, 0, 1).normalize!
     new_edges = entities.add_circle start, vector, @cutDiamiter
     new_face = entities.add_face(new_edges)
     if new_face
       new_face.layer = path_layer
-      new_face.material = "green"
+      new_face.material = "blue"
 
       # move circles to path layer.
       new_edges.each do |edge|
@@ -533,9 +533,9 @@ class Wafer
 
     xv = start.x - finish.x
     yv = start.y - finish.y
-    lenv = Math.sqrt((xv*xv)+(yv*yv))
-    xoffset =  - (yv*@cutDiamiter/lenv)
-    yoffset =  + (xv*@cutDiamiter/lenv)
+    lenv = Math.sqrt((xv * xv) + (yv * yv))
+    xoffset =  - (yv * @cutDiamiter / lenv)
+    yoffset =  + (xv * @cutDiamiter / lenv)
     new_face = entities.add_face [start.x + xoffset,\
                                   start.y + yoffset,\
                                   @height + 0.001],\
@@ -673,62 +673,69 @@ class Wafer
 
     @wafer_objects.each do |object|
       wafer_path=[]
+      firstLine = nil
+      lastPoint = nil
+      line2 = nil
+
       Sketchup.set_status_text "Route: #{wafer_path.length}/"\
                                "#{@wafer_objects.length}", SB_VCB_VALUE
 
-      loop = (object[0] == object.last)
-      if loop
-        puts("Loop")
-      else
-        puts("Not loop. Starts: #{object[0]} Ends: #{object.last}")
-      end #if
-
-      line2 = nil
-      last = (object.length) -1
-
       # This logic only works for loops.
       # ie, when the line starts and finishes in the same place.
+      loop = (object[0] == object.last)
       if loop
-        object.each do |point|
-          pos = object.index(point)
-          if pos < last
-            xv = point[0] - object[pos+1][0]
-            yv = point[1] - object[pos+1][1]
+        puts("Loop #{wafer_path.length}")
+      else
+        puts("Not loop. Starts: #{object[0].inspect} Ends: #{object.last.inspect}")
+        return
+      end #if
 
-            xcenter = point[0] - xv/2
-            ycenter = point[1] - yv/2
-            lenv = Math.sqrt((xv*xv)+(yv*yv))
 
-            outside_inside = 1
-            xoffset = -(yv * @cutDiamiter/lenv) 
-            yoffset = +(xv * @cutDiamiter/lenv) 
-            x = xcenter + xoffset
-            y = ycenter + yoffset      
+      object.each do |point|
+        if lastPoint != nil
+          pathVect = Geom::Vector3d.new(lastPoint.x - point.x,
+                                        lastPoint.y - point.y,
+                                        0)
+          offsetVect = Geom::Vector3d.new(pathVect.y, -pathVect.x, 0)
+          offsetVect.normalize!
+          offsetVect.length = @cutDiamiter
+          midPoint = Geom::Point3d.linear_combination(0.5, lastPoint, 0.5, point)
+          midPath = midPoint.offset(offsetVect)
+          midPath.z = @height.mm
 
-            @wafer_objects.each do |object2|
-              if Geom.point_in_polygon_2D([x,y,@height.mm], object2, true)
-                outside_inside *= -1
-              end #if
-            end
+          @wafer_objects.each do |object2|
+            if Geom.point_in_polygon_2D(midPath, object2, true)
+              offsetVect.length *= -1
+            end #if
+          end
+          midPath = midPoint.offset(offsetVect)
 
-            xoffset = -(yv * @cutDiamiter/lenv) * outside_inside
-            yoffset = +(xv * @cutDiamiter/lenv) * outside_inside
-            x = xcenter + xoffset
-            y = ycenter + yoffset      
+          line1 = line2
+          line2 = [midPath, pathVect.normalize]
 
-            line1 = line2
-            line2 = [Geom::Point3d.new(x, y, @height), Geom::Vector3d.new(xv, yv, 0)]
+          if firstLine == nil
+            firstLine = line2
+          end
 
-            if line1
-              centerpoint = Geom.intersect_line_line(line1, line2)
-              if centerpoint
-                wafer_path.push(centerpoint)
-              end #if centerpoint
-            end #if line1
+          if line1
+            centerpoint = Geom.intersect_line_line(line1, line2)
+            if centerpoint
+              wafer_path.push(centerpoint)
+            else
+              puts("Could not find intersection between #{line1.inspect} and #{line2.inspect}")
+            end #if centerpoint
+          end #if line1
 
-          end #if pos < last
-        end #@point.each
-      end #if loop
+        end #if lastPoint
+        lastPoint = point
+      end #@point.each
+      
+      centerpoint = Geom.intersect_line_line(line2, firstLine)
+      if centerpoint
+        wafer_path.push(centerpoint)
+      else
+        puts("Could not find intersection between #{line1.inspect} and #{line2.inspect}")
+      end #if centerpoint
 
       @wafer_paths.push(wafer_path)
     end #@wafer_objects.each  
