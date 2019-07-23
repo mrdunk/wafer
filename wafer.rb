@@ -696,13 +696,17 @@ class Wafer
           pathVect = Geom::Vector3d.new(lastPoint.x - point.x,
                                         lastPoint.y - point.y,
                                         0)
+          # Right angles to pathVect, length of @cutDiamiter.
           offsetVect = Geom::Vector3d.new(pathVect.y, -pathVect.x, 0)
-          offsetVect.normalize!
           offsetVect.length = @cutDiamiter
+
+          # Get a point on the cutting path.
           midPoint = Geom::Point3d.linear_combination(0.5, lastPoint, 0.5, point)
           midPath = midPoint.offset(offsetVect)
           midPath.z = @height.mm
 
+          # Check if the cutting path should be inside or outside the current
+          # geometry.
           @wafer_objects.each do |object2|
             if Geom.point_in_polygon_2D(midPath, object2, true)
               offsetVect.length *= -1
