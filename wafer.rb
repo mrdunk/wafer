@@ -1,4 +1,4 @@
-@@version = 'v0.2.10'
+@@version = 'v0.2.11'
 
 require 'sketchup'
 
@@ -10,6 +10,7 @@ require 'sketchup'
                "closeGaps",\
                "scriptMode",\
                "orientation",\
+               "displayPath",\
                "debug"]
 @config = {}
 
@@ -40,6 +41,7 @@ def loadConfig()
                   "decimalPlaces" => "3",\
                   "minimumResolution" => "0.001",\
                   "units" => "mm",\
+                  "displayPath" => "false",\
                   "debug" => "false"}
 
   @configKeys.each do | key |
@@ -63,6 +65,7 @@ def menu()
                         "decimalPlaces" => "Gcode decimal places",\
                         "minimumResolution" => "Minimum movment size",\
                         "units" => "Units to use in Gcode file",\
+                        "displayPath" => "Display width of gcode path (slower)",\
                         "debug" => "Enable debug pannel"}
   sizes = "0.0|"\
           "0.01|0.02|0.03|0.04|0.05|0.06|0.07|0.08|0.09|"\
@@ -81,6 +84,7 @@ def menu()
                  "decimalPlaces" => "0|1|2|3|4",\
                  "minimumResolution" => "0.001|0.01|0.1|1|10",\
                  "units" => "mm|inch",\
+                 "displayPath" => "true|false",\
                  "debug" => "true|false"}
   descriptions = []
   values = []
@@ -147,6 +151,7 @@ UI.menu("PlugIns").add_item("Wafer") {
         new_wafer.minimumResolution = @config["minimumResolution"].to_f
         new_wafer.units = @config["units"]
         new_wafer.closeGaps = @config["closeGaps"]
+        new_wafer.displayPath = @config["displayPath"]
 
         new_wafer.header  
 
@@ -209,6 +214,9 @@ class Wafer
   end
   def closeGaps=(cg)
     @closeGaps = cg.to_f
+  end
+  def displayPath=(dp)
+    @displayPath = dp
   end
 
   attr_accessor :preview_layout
@@ -507,6 +515,25 @@ class Wafer
 
   # Draw a movement of the cutting head to screen. 
   def draw_path_screen(entities, path_layer, start, finish)
+    if @displayPath == "true"
+      draw_path_screen_complex(entities, path_layer, start, finish)
+    else
+      draw_path_screen_simple(entities, path_layer, start, finish)
+    end
+  end
+
+  def draw_path_screen_simple(entities, path_layer, start, finish)
+    new_line = entities.add_line [start.x + @offset_x,\
+                                  start.y + @offset_y,\
+                                  @height + @offset_z + 0.001],\
+                                  [finish.x + @offset_x,\
+                                   finish.y + @offset_y,\
+                                   @height + @offset_z + 0.001]
+    new_line.material = "green"
+    new_line.layer = path_layer
+  end
+
+  def draw_path_screen_complex(entities, path_layer, start, finish)
     start = [start.x + @offset_x,\
              start.y + @offset_y,\
              @height.to_mm + @offset_z + 0.001]
@@ -515,11 +542,11 @@ class Wafer
              @height.to_mm + @offset_z + 0.001]
     
     vector = Geom::Vector3d.new(0, 0, 1).normalize!
-    new_edges = entities.add_circle start, vector, @cutDiamiter
+    new_edges = entities.add_circle start, vector, @cutDiamiter / 2
     new_face = entities.add_face(new_edges)
     if new_face
       new_face.layer = path_layer
-      new_face.material = "blue"
+      new_face.material = "green"
 
       # move circles to path layer.
       new_edges.each do |edge|
@@ -534,8 +561,8 @@ class Wafer
     xv = start.x - finish.x
     yv = start.y - finish.y
     lenv = Math.sqrt((xv * xv) + (yv * yv))
-    xoffset =  - (yv * @cutDiamiter / lenv)
-    yoffset =  + (xv * @cutDiamiter / lenv)
+    xoffset =  - (yv * @cutDiamiter / lenv / 2)
+    yoffset =  + (xv * @cutDiamiter / lenv / 2)
     new_face = entities.add_face [start.x + xoffset,\
                                   start.y + yoffset,\
                                   @height + 0.001],\
@@ -677,28 +704,41 @@ class Wafer
       lastPoint = nil
       line2 = nil
 
-      Sketchup.set_status_text "Route: #{wafer_path.length}/"\
+      Sketchup.set_status_text "Route: #{@wafer_paths.length}/"\
                                "#{@wafer_objects.length}", SB_VCB_VALUE
 
       # This logic only works for loops.
       # ie, when the line starts and finishes in the same place.
       loop = (object[0] == object.last)
       if loop
-        puts("Loop #{wafer_path.length}")
+        puts("Loop #{@wafer_paths.length}")
       else
         puts("Not loop. Starts: #{object[0].inspect} Ends: #{object.last.inspect}")
-        return
+        # Push empty path and skip to next object.
+        @wafer_paths.push(wafer_path)
+        next
       end #if
-
 
       object.each do |point|
         if lastPoint != nil
           pathVect = Geom::Vector3d.new(lastPoint.x - point.x,
                                         lastPoint.y - point.y,
                                         0)
-          # Right angles to pathVect, length of @cutDiamiter.
+          
+          if line2 and (line2[1].angle_between(pathVect) < 0.01 or
+                        line2[1].angle_between(pathVect.reverse) < 0.01)
+            # Geom.intersect_line_line will fail later due to near paralel
+            # lines.
+            # Skip the rest of this loop.
+            next
+          end
+
+          # Right angles to pathVect, length of @cutDiamiter / 2 (radius).
           offsetVect = Geom::Vector3d.new(pathVect.y, -pathVect.x, 0)
-          offsetVect.length = @cutDiamiter
+          if offsetVect.length == 0
+            next
+          end
+          offsetVect.length = @cutDiamiter / 2
 
           # Get a point on the cutting path.
           midPoint = Geom::Point3d.linear_combination(0.5, lastPoint, 0.5, point)
@@ -708,7 +748,7 @@ class Wafer
           # Check if the cutting path should be inside or outside the current
           # geometry.
           @wafer_objects.each do |object2|
-            if Geom.point_in_polygon_2D(midPath, object2, true)
+            if offsetVect.length != 0 and Geom.point_in_polygon_2D(midPath, object2, true)
               offsetVect.length *= -1
             end #if
           end
@@ -726,6 +766,7 @@ class Wafer
             if centerpoint
               wafer_path.push(centerpoint)
             else
+              puts(line2[1].angle_between(line1[1]))
               puts("Could not find intersection between #{line1.inspect} and #{line2.inspect}")
             end #if centerpoint
           end #if line1
@@ -738,7 +779,8 @@ class Wafer
       if centerpoint
         wafer_path.push(centerpoint)
       else
-        puts("Could not find intersection between #{line1.inspect} and #{line2.inspect}")
+        puts("Could not find intersection between #{firstLine.inspect} and #{line2.inspect}")
+        wafer_path.push(wafer_path[0])
       end #if centerpoint
 
       @wafer_paths.push(wafer_path)
