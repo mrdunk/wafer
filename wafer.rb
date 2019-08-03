@@ -5,12 +5,12 @@ require 'sketchup'
 @configKeys = ["cutDiamiter",\
                "cutDepth",\
                "decimalPlaces",\
-               "minimumResolution",\
                "units",\
-               "closeGaps",\
                "scriptMode",\
                "orientation",\
                "displayPath",\
+               "minimumResolution",\
+               "closeGaps",\
                "debug"]
 @config = {}
 
@@ -36,10 +36,10 @@ def loadConfig()
                   "cutDiamiter" => "1.0",\
                   "scriptMode" => "Single",\
                   "cutDepth" => "0.5",\
-                  "closeGaps" => "0.0",\
+                  "closeGaps" => "1.0",\
                   "orientation" => "Stacked",\
                   "decimalPlaces" => "3",\
-                  "minimumResolution" => "0.001",\
+                  "minimumResolution" => "0.01",\
                   "units" => "mm",\
                   "displayPath" => "false",\
                   "debug" => "false"}
@@ -63,7 +63,7 @@ def menu()
                         "closeGaps" => "Close gaps in looped paths (mm)",\
                         "orientation" => "Preview orientation",\
                         "decimalPlaces" => "Gcode decimal places",\
-                        "minimumResolution" => "Minimum movment size",\
+                        "minimumResolution" => "Minimum resolution (mm)",\
                         "units" => "Units to use in Gcode file",\
                         "displayPath" => "Display width of gcode path (slower)",\
                         "debug" => "Enable debug pannel"}
@@ -82,7 +82,7 @@ def menu()
                  "closeGaps" => sizes,\
                  "orientation" => "Spread|Stacked",\
                  "decimalPlaces" => "0|1|2|3|4",\
-                 "minimumResolution" => "0.001|0.01|0.1|1|10",\
+                 "minimumResolution" => "0.001|0.01|0.1|1|2|5|10",\
                  "units" => "mm|inch",\
                  "displayPath" => "true|false",\
                  "debug" => "true|false"}
@@ -150,7 +150,7 @@ UI.menu("PlugIns").add_item("Wafer") {
         new_wafer.decimalPlaces = @config["decimalPlaces"]
         new_wafer.minimumResolution = @config["minimumResolution"].to_f
         new_wafer.units = @config["units"]
-        new_wafer.closeGaps = @config["closeGaps"]
+        new_wafer.closeGaps = @config["closeGaps"].to_f
         new_wafer.displayPath = @config["displayPath"]
 
         new_wafer.header  
@@ -213,7 +213,7 @@ class Wafer
     @out_file 
   end
   def closeGaps=(cg)
-    @closeGaps = cg.to_f
+    @closeGaps = cg
   end
   def displayPath=(dp)
     @displayPath = dp
@@ -303,9 +303,9 @@ class Wafer
     puts("cutDiamiter:        #{@cutDiamiter.to_mm}mm\n"\
          "cutDepth:           #{@cutDepth}mm\n"\
          "decimalPlaces:      #{@decimalPlaces}\n"\
-         "minimumResolution:  #{@minimumResolution.to_mm}mm\n"\
+         "minimumResolution:  #{@minimumResolution}mm\n"\
          "units:              #{@units}\n"\
-         "closeGaps:          #{@closeGaps}\n"\
+         "closeGaps:          #{@closeGaps}mm\n"\
          "displayPath:        #{@displayPath}\n"\
          "version:            #{@@version}")
 
@@ -497,7 +497,7 @@ class Wafer
       end  # loop do
 
       if wafer_object[0] != wafer_object.last
-        if wafer_object[0].distance(wafer_object.last) < @closeGaps
+        if wafer_object[0].distance(wafer_object.last).to_mm < @closeGaps
           puts("Closing loop in shape #{@wafer_objects.size + 1}")
           wafer_object.push(Geom::Point3d.new(wafer_object[0].x,\
                                               wafer_object[0].y,\
@@ -524,7 +524,7 @@ class Wafer
 
   # Draw a movement of the cutting head to screen. 
   def draw_path_screen(entities, path_layer, start, finish, colour="green")
-    if @displayPath == "true"
+    if @displayPath == "true" and @cutDiamiter > 0
       draw_path_screen_complex(entities, path_layer, start, finish, colour)
     else
       draw_path_screen_simple(entities, path_layer, start, finish, colour)
@@ -538,8 +538,10 @@ class Wafer
                                   [finish.x + @offset_x,\
                                    finish.y + @offset_y,\
                                    @height.mm + @offset_z + 0.001]
-    new_line.material = colour
-    new_line.layer = path_layer
+    if new_line
+      new_line.material = colour
+      new_line.layer = path_layer
+    end
   end
 
   def draw_path_screen_complex(entities, path_layer, start, finish, colour)
@@ -649,7 +651,6 @@ class Wafer
 
       point_previous = [nil,nil,nil]
       object.each do |point|
-
         if point_previous[0]
           new_line = entities.add_line [point_previous[0] + @offset_x,\
                                         point_previous[1] + @offset_y,\
@@ -666,10 +667,15 @@ class Wafer
   
     # draw router path.
     puts("Draw router path to screen in green and write gcode")
-    count = 1
+    count = 0
     @wafer_paths.each do |path|
       Sketchup.set_status_text "Write gcode: #{count}/#{@wafer_paths.length}", SB_VCB_VALUE
       writeGcode("(loop #{count})")
+
+      if path.length == 0
+        puts("Path #{count} is not a loop. Try increasing closeGaps value.")
+        next
+      end
       count += 1
 
       previous_point = path.last
@@ -705,11 +711,17 @@ class Wafer
 
     @wafer_paths=[]
 
+    if @cutDiamiter == 0
+      @wafer_objects.each do |object|
+        @wafer_paths.push(object)
+      end
+      return
+    end
+
     @wafer_objects.each do |object|
       wafer_path=[]
       firstLine = nil
-      lastPoint = nil
-      line2 = nil
+      lastLine = nil
 
       Sketchup.set_status_text "Route: #{@wafer_paths.length}/"\
                                "#{@wafer_objects.length}", SB_VCB_VALUE
@@ -726,69 +738,92 @@ class Wafer
         next
       end #if
 
+      # Work out which side of the edge the endmill should gut on.
+      # Since the method used is prone to false positives/negatives, take the
+      # average result for every edge in the shape.
+      outsideInsideTotal = 0.0
+      lastPoint = nil
       object.each do |point|
         if lastPoint != nil
           pathVect = Geom::Vector3d.new(lastPoint.x - point.x,
                                         lastPoint.y - point.y,
                                         0)
-          
-          if line2 and (line2[1].angle_between(pathVect) < 0.01 or
-                        line2[1].angle_between(pathVect.reverse) < 0.01)
-            # Geom.intersect_line_line will fail later due to near paralel
-            # lines.
-            # Skip the rest of this loop.
-            next
-          end
-
           # Right angles to pathVect, length of @cutDiamiter / 2 (radius).
           offsetVect = Geom::Vector3d.new(pathVect.y, -pathVect.x, 0)
           if offsetVect.length == 0
+            puts("offsetVect.length == 0")
             next
           end
           offsetVect.length = @cutDiamiter / 2
-
+          
           # Get a point on the cutting path.
           midPoint = Geom::Point3d.linear_combination(0.5, lastPoint, 0.5, point)
           midPath = midPoint.offset(offsetVect)
           midPath.z = @height.mm
 
           # Check if the cutting path should be inside or outside the current
-          # geometry.
+          # geometry for this point by seing how many shapes it is inside.
+          # Nested shapes will alter the result once for each shape.
+          oi = 1
           @wafer_objects.each do |object2|
-            if offsetVect.length != 0 and Geom.point_in_polygon_2D(midPath, object2, true)
-              offsetVect.length *= -1
+            if Geom.point_in_polygon_2D(midPath, object2, false)
+              oi *= -1
             end #if
           end
-          midPath = midPoint.offset(offsetVect)
+          outsideInsideTotal += oi
+        end #lastPoint != nil
+        lastPoint = point
+      end
+      outsideInside = outsideInsideTotal / object.length
 
-          line1 = line2
-          line2 = [midPath, pathVect.normalize]
+      lastPoint = nil
+      object.each do |point|
+        if lastPoint != nil
+          pathVect = Geom::Vector3d.new(lastPoint.x - point.x,
+                                        lastPoint.y - point.y,
+                                        0)
+          
+          # Right angles to pathVect, length of @cutDiamiter / 2 (radius).
+          offsetVect = Geom::Vector3d.new(pathVect.y, -pathVect.x, 0)
+          if offsetVect.length == 0
+            puts("offsetVect.length == 0")
+            next
+          end
+          offsetVect.length = @cutDiamiter / 2
+
+          # Get a point on the cutting path.
+          offsetVect.length *= outsideInside
+          pathPoint = point.offset(offsetVect)
+          pathPoint.z = @height.mm
+
+          line = [pathPoint, pathVect]
 
           if firstLine == nil
-            firstLine = line2
-          end
-
-          if line1
-            centerpoint = Geom.intersect_line_line(line1, line2)
+            firstLine = line
+          else
+            centerpoint = Geom.intersect_line_line(lastLine, line)
             if centerpoint
               wafer_path.push(centerpoint)
             else
-              puts(line2[1].angle_between(line1[1]))
-              puts("Could not find intersection between #{line1.inspect} and #{line2.inspect}")
+              puts("Could not find intersection between #{lastLine} and #{line}")
             end #if centerpoint
-          end #if line1
+          end #if firstLine == nil
 
+          lastLine = line
         end #if lastPoint
         lastPoint = point
       end #@point.each
       
-      centerpoint = Geom.intersect_line_line(line2, firstLine)
+      centerpoint = Geom.intersect_line_line(lastLine, firstLine)
       if centerpoint
         wafer_path.push(centerpoint)
       else
-        puts("Could not find intersection between #{firstLine.inspect} and #{line2.inspect}")
-        wafer_path.push(wafer_path[0])
+        puts("Could not find intersection between #{firstLine} and #{lastLine}")
       end #if centerpoint
+
+      if wafer_path[0] != wafer_path.last
+        wafer_path.push(wafer_path[0])
+      end
 
       @wafer_paths.push(wafer_path)
     end #@wafer_objects.each  
