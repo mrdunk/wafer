@@ -1,198 +1,379 @@
-@@version = 'v0.2.13'
+=begin
+
+MIT License
+
+Copyright (c) 2020 The Wafer Authors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+##
+## TOOL DESCRIPTION
+##
+## This tool takes a selected geometry (no group or components yet) and generates Gcode from it.
+## Command is in menu "Tools" and is "generate gcode"
+## Geometry has to have some thickness for it to work and it will only consider geometry that goes fully through the thickness of the part, anything else will be ignored.
+## Option menu is provided at the beginning, not all options have an effect yet.
+## Depending on options various Gcode will be generated in header/footer
+## Then motion code will be generated, one loop for each independent feature
+## the gcode file is stored as an .nc file and it sports the sketchup file name by default.
+## It also take on the layer name of the geoometry entities PROVIDED that all the selected one are on the same layer. It will ignore anything that is
+## not a face nor an edge (dimension, guide line for example)
+## This allows to have several parts in a drawing on different layers and to create a self executing gcode for each part/layer independently
+## Just select all geometry that is on a given layer and the file name will be 'sketchupfilename_layername'.nc
+## It also allows to create one gcode file for all the parts at once. Select it all and when they are on different layers,
+## the gcode file will be 'sketchupfilename'.nc
+##
+##
+## Description of options:
+## cutdiameter: Set the tool diameter, and thus the offset; kerf is a tool diameter; If 0 it will machine on the line
+## cutDepth: It will set up the default cut depth for multiple pass; At some point it will be interpolated for intermediary faces, not done yet.
+## Z tool Offset: not implemented yet, but the plan it to give a tool offset, for example to focus laser, or for he needle to cut below (negative offset), etc..
+## scriptmode: machining option; 4 options so far
+##      single plane: all the gcode will be conforming to the bottom layer of the geometry, one pass
+##      Single plane with bevels: not implemented yet, but will be the same except some edges and maybe lines will be cut as bevels
+##      Multiple Depths: It will machine the contour with multiple passes at cut depth (not fully working yet), and intermediary faces (not yet implemented)
+##      Contour:
+## feedrate: sets the base feed rate, if paramperpath is no, then this feed rate will apply to the whole gcode file, otherwise feedrate per loop (not implemented yet)
+## paraperpath: If no the cutting parameters will apply to the whole gcode file. If yes will be able to change cutting parameter (feedrate, depth, tool, spindle) per each feature/loop
+## units: It's the unit that you want the gcode file output to be in
+## coolant: If yes it will set up both coolant channel in the code (mist and flood)
+## climb: not implemented yet
+## orientation: "On part" will display the tool path on the part
+##      "Spread" will display the tool path next to the part; if multiple they will all be spread on the plane
+##      "stacked" will display all the machining path (multiple depths) as a stack offset from the part
+## displaytoolwidth, will draw the entire tool width on the tool path, not just the center. It makes the drawing slower
+## debug: yes will show the ruby console
+##
+##
+##
+## This tool is not designed for professional use.
+## Consequently, no liabilty in any form whatsoever can be attributed to the author or his company in case of use
+## for doing or making anything. If you as a user choose to use this tool, you implicetly understand that this software
+## is provided "as is", does not intend to fit any specific purpose beyond the scope of what it may or may not do.
+## You furthermore agree that you are using it at your own risk.
+##
+## Tool copyright Edge LLC, Michael Vulpillat, 2020
+## Edgecons@usa.net
+## copyright 2020
+
+Version history:
+Based on the original wafer.rb version 0.2.13 made by Duncan Law
+Evolution from April 2020 by Michael Vulpillat, EDGE LLC.
+Version 0.3 April 2020
+Forced edge color display, changed name and menu of command line, nc file bears the file and layer name
+Changed spelling of "Diamiter", included coolant channel, feedrate (not fully implemented yet)
+Fixed offset bug in which path was not at half mill diameter.
+Made displays appear in prompt instead of VCB value
+0.3.8 added feedrate per section, not working yet. Feedrate works
+added option for climb or conventional milling, not yet implemented in gcode
+Added file name in Gcode file comments
+Changed displayPath variable name to displayToolwidth
+Made it unit independent, based on length object in sketchup
+Forced rounding to 3 for mm and 4 for inches, no more ask.
+Not displaying outline if path is "On Part"
+0.4.1
+More dimension independence; Changed the whole structure to more conventional sketchup ruby class and call
+Introduced an environment unit flag @envunit, to condition behavior.
+0.4.3 Change default config file name (added m) and provided for version on menu window
+0.4.4 puts label for each contour; Has G00 for rapid motion to contour.
+
+
+#### finish implementing feedrate
+#### implement which plane and bevels
+####
+####
+####
+=end
+
+
+@@version = "v0.4.4"
+@@config_file = 'wafer_rb.config'
 
 require 'sketchup'
+class Wafer  #MV1
 
-@configKeys = ["cutDiamiter",\
-               "cutDepth",\
-               "decimalPlaces",\
-               "units",\
-               "scriptMode",\
-               "orientation",\
-               "displayPath",\
-               "minimumResolution",\
-               "closeGaps",\
-               "debug"]
-@config = {}
-
-# Reset config to default values.
-def clearConfig()
-  @config.each do |key, value|
-    result = Sketchup.write_default('dla_wafer_rb', key,  nil)
-    puts("clear: #{key} #{result}")
-  end
-end
-
-# Save entries in @config to persistent storage.
-def saveConfig()
-  @config.each do |key, value|
-    result = Sketchup.write_default('dla_wafer_rb', key,  value)
-    puts("save: #{key}, #{value}, #{result}")
-  end
-end
-
-# Load configuration from persistent storage into @config hashmap.
-def loadConfig()
-  defaultValue = {\
-                  "cutDiamiter" => "1.0",\
-                  "scriptMode" => "Single",\
-                  "cutDepth" => "0.5",\
-                  "closeGaps" => "1.0",\
-                  "orientation" => "Stacked",\
-                  "decimalPlaces" => "3",\
-                  "minimumResolution" => "0.01",\
-                  "units" => "mm",\
-                  "displayPath" => "false",\
-                  "debug" => "false"}
-
-  @configKeys.each do | key |
-    value = Sketchup.read_default('dla_wafer_rb', key)
-    puts("load: #{key}, #{value}")
-    if value == nil
-      value = defaultValue[key]
+  # Reset config to default values.
+  def clearConfig()
+    @config.each do |key, value|
+      result = Sketchup.write_default(@@config_file, key,  nil)
+      puts("clear: #{key} #{result}")
     end
-    @config[key] = value
-  end
-end
+  end #clearConfig
 
-# Set values in the @config hashmap.
-def menu()
-  configDescriptions = {\
-                        "cutDiamiter" => "Diamiter of cutter? (mm)",\
-                        "scriptMode" => "Mode of operation",\
-                        "cutDepth" => "Depth of cut? (mm)",\
-                        "closeGaps" => "Close gaps in looped paths (mm)",\
-                        "orientation" => "Preview orientation",\
-                        "decimalPlaces" => "Gcode decimal places",\
-                        "minimumResolution" => "Minimum resolution (mm)",\
-                        "units" => "Units to use in Gcode file",\
-                        "displayPath" => "Display width of gcode path (slower)",\
-                        "debug" => "Enable debug pannel"}
-  sizes = "0.0|"\
-          "0.01|0.02|0.03|0.04|0.05|0.06|0.07|0.08|0.09|"\
-          "0.1|0.2|0.3|0.4|0.5|0.6|0.7|0.8|0.9|"\
-          "1.0|1.1|1.2|1.3|1.4|1.5|1.6|1.7|1.8|1.9|"\
-          "2.0|2.1|2.2|2.3|2.4|2.5|2.6|2.7|2.8|2.9|"\
-          "3.0|3.175|3.5|4.0|4.5|5.0|6.0|6.35|7.0|8.0|9.0|9.525|10.0|"\
-          "12.0|12.7|14.0|15.0|16.0|18.0|20.0|"\
-          "25.0|30.0|35.0|40.0|50.0|100.0"
-  menuOptions = {\
-                 "cutDiamiter" => sizes,\
-                 "scriptMode" => "Single|Repeated single|Contour",\
-                 "cutDepth" => sizes,\
-                 "closeGaps" => sizes,\
-                 "orientation" => "Spread|Stacked",\
-                 "decimalPlaces" => "0|1|2|3|4",\
-                 "minimumResolution" => "0.001|0.01|0.1|1|2|5|10",\
-                 "units" => "mm|inch",\
-                 "displayPath" => "true|false",\
-                 "debug" => "true|false"}
-  descriptions = []
-  values = []
-  options = []
-  @configKeys.each do | key |
-    descriptions.push(configDescriptions[key])
-    values.push(@config[key])
-    options.push(menuOptions[key])
-  end
-  input = UI.inputbox descriptions, values, options, "Gcode options."
-
-  if input
-    for x in 0..(input.size - 1)
-      key = @configKeys[x]
-      @config[key] = input[x]
-      puts("menu: #{key} #{input[x]}")
+  # Save entries in @config to persistent storage.
+  def saveConfig()
+    @config.each do |key, value|
+      result = Sketchup.write_default(@@config_file, key,  value)
+      puts("save: #{key}, #{value}, #{result}")
     end
-    return true
-  end
-end 
+  end #saveConfig
 
-# Round floats down to a sane number of decimal places.
-def roundToPlaces(value, places, units)
-  if units == "mm"
-    value = value.to_mm
-  end
-  places = places.to_i
-  returnVal = ((value * (10 ** places)).round.to_f / (10 ** places))
-  return returnVal
-end
+  # Load configuration from persistent storage into @config hashmap.
+  def loadConfig()
+    feeddef = "500" if [2, 3, 4].include? @envunit
+    feeddef = "20" if [0, 1].include? @envunit
+    defaultValue = {\
+                    "cutDiameter" => "2.0 mm",\
+                    "scriptMode" => "Single Plane",\
+                    "cutDepth" => "0.5 mm",\
+                    "feedrate" => feeddef,\
+                    "paramperpath" => "No",\
+                    "closeGaps" => "1.0 mm",\
+                    "orientation" => "Stacked",\
+                    "minimumResolution" => "0.01 mm",\
+                    "units" => "mm",\
+                    "displayToolwidth" => "No",\
+                    "coolant" => "No",\
+                    "climb" => "Climb",\
+                    "debug" => "No"}
 
-
-# Add a menu item to launch our plugin.
-UI.menu("PlugIns").add_item("Wafer") {
-  Sketchup.set_status_text "Calculating Gcode", SB_VCB_VALUE
-
-  loadConfig()
-  if menu()
-    saveConfig()
-
-    if @config["debug"] != "false"
-      # Show the Ruby Console at startup so we can
-      # see any programming errors we may make.
-      Sketchup.send_action "showRubyPanel:"
+    @configKeys.each do | key |
+      value = Sketchup.read_default(@@config_file, key)
+      puts("load: #{key}, #{value}")
+      if value == nil
+        value = defaultValue[key]
+      end
+      @config[key] = value
     end
+  end #loadConfig
 
-    gcodeFile = UI.savepanel "Save Gcode File", "c:\\", "default.nc"
-    puts("Writing to #{gcodeFile}")
-    if gcodeFile
-      new_wafer = Wafer.new
-      if new_wafer.find_bounds == nil
-        Sketchup.set_status_text "", SB_VCB_VALUE
-        puts("No geometry selected")
-        UI.messagebox("No geometry selected", type = MB_OK)
-        return
+  # Set values in the @config hashmap.
+  def menu()
+    feedtext = "Base Feed Rate (mm/mn)" if [2, 3, 4].include? @envunit
+    feedtext = "Base Feed Rate (ipm)" if [0, 1].include? @envunit
+    configDescriptions = {\
+                          "cutDiameter" => "Tool Diameter",\
+                          "scriptMode" => "Machining Options",\
+                          "cutDepth" => "Depth of Cut",\
+                          "feedrate" => feedtext,\
+                          "paramperpath" => "Cutting Parameters/Loop",\
+                          "climb" => "Type of Milling:",\
+                          "closeGaps" => "Close gaps, looped paths",\
+                          "orientation" => "Preview Path Position",\
+                          "minimumResolution" => "Minimum resolution",\
+                          "units" => "Units to use in Gcode file",\
+                          "displayToolwidth" => "Display tool path width (slower)",\
+                          "coolant" => "Trigger ''Coolant''?",\
+                          "debug" => "Show Ruby Console"}
+    # TODO(dunk): `sizes` is only used by `closeGaps` now and i think even that could
+    # use Michael's simplified units.
+    # If we can't make `closeGaps` go away entirely, let's replace this with a
+    # simple input field.
+    sizes = "0.0|"\
+      "0.01|0.02|0.03|0.04|0.05|0.06|0.07|0.08|0.09|"\
+      "0.1|0.2|0.3|0.4|0.5|0.6|0.7|0.8|0.9|"\
+      "1.0|1.1|1.2|1.3|1.4|1.5|1.6|1.7|1.8|1.9|"\
+      "2.0|2.1|2.2|2.3|2.4|2.5|2.6|2.7|2.8|2.9|"\
+      "3.0|3.175|3.5|4.0|4.5|5.0|6.0|6.35|7.0|8.0|9.0|9.525|10.0|"\
+      "12.0|12.7|14.0|15.0|16.0|18.0|20.0|"\
+      "25.0|30.0|35.0|40.0|50.0|100.0"
+    menuOptions = {\
+                   "scriptMode" => "Single Plane|Single with Bevels|Multiple Depths|Contour",\
+                   "paramperpath" => "Yes|No",\
+                   "climb" => "Climb|Conventional",\
+                   "closeGaps" => sizes,\
+                   "orientation" => "On Part|Spread|Stacked",\
+                   "minimumResolution" => "0.001|0.01|0.1|1|2|5|10",\
+                   "units" => "mm|inches",\
+                   "displayToolwidth" => "Yes|No",\
+                   "coolant" => "Yes|No",\
+                   "debug" => "Yes|No"}
+    descriptions = []
+    values = []
+    options = []
+    @configKeys.each do | key |
+      descriptions.push(configDescriptions[key])
+      values.push(@config[key])
+      options.push(menuOptions[key])
+    end
+    input = UI.inputbox descriptions, values, options, "Gcode parameters     #{@@version}"
+
+    if input
+      for x in 0..(input.size - 1)
+        key = @configKeys[x]
+        @config[key] = input[x]
+        puts("menu: #{key} #{input[x]}")
+      end
+      return true
+    end
+  end # menu
+
+  # Round floats down to a sane number of decimal places.
+  def roundToPlaces(value, units)
+    value = value.to_l
+    if units == "mm"
+      value = value.to_mm
+      returnVal = ((value * (10 ** 3)).round.to_f / (10 ** 3))
+      return returnVal
+    elsif units == "inches"
+      value = value.to_inch
+      returnVal = ((value * (10 ** 4)).round.to_f / (10 ** 4))
+      return returnVal
+    end
+    raise ("Invalid units: " + units.to_s)
+  end # roundToPlaces
+
+
+  # Add a menu item to launch our plugin.
+  def activate()
+    @configKeys = ["cutDiameter",\
+                   "cutDepth",\
+                   "units",\
+                   "feedrate",\
+                   "paramperpath",\
+                   "scriptMode",\
+                   "orientation",\
+                   "displayToolwidth",\
+                   "minimumResolution",\
+                   "closeGaps",\
+                   "coolant",\
+                   "climb",\
+                   "debug"]
+    @config = {}
+
+    Sketchup.set_status_text "Calculating Gcode", SB_PROMPT
+
+    loadConfig()
+    if menu()
+      saveConfig()
+
+      if @config["debug"] != "No"
+        # Show the Ruby Console at startup so we can
+        # see any programming errors we may make.
+        Sketchup.send_action "showRubyPanel:"
+      end # Ruby Console
+
+      #MV to generate file with name
+      modelPath = Sketchup.active_model.path
+      if File.exists?(modelPath)
+        @namef = File.basename(modelPath, '.*')
       else
-        new_wafer.out_file = gcodeFile
-        new_wafer.preview_layout = @config["orientation"]
-        new_wafer.height = 0
-        new_wafer.cutDepth = (@config["cutDepth"].to_f)
-        new_wafer.cutDiamiter = (@config["cutDiamiter"].to_f.mm)
-        new_wafer.create_layers
-        new_wafer.decimalPlaces = @config["decimalPlaces"]
-        new_wafer.minimumResolution = @config["minimumResolution"].to_f
-        new_wafer.units = @config["units"]
-        new_wafer.closeGaps = @config["closeGaps"].to_f
-        new_wafer.displayPath = @config["displayPath"]
+        @namef = "untitled"
+      end
 
-        new_wafer.header  
-
-        if @config["scriptMode"] == "Single"
-          new_wafer.single
-        elsif @config["scriptMode"] == "Repeated single"
-          new_wafer.repeated_single
-        elsif @config["scriptMode"] == "Contour"
-          new_wafer.contour
+      model = Sketchup.active_model
+      selection = model.selection
+      alayer = "empty"
+      it = selection.count - 1										
+      for i in 0..it do
+        if (selection[i].typename  == "Edge" || selection[i].typename  == "Face")
+          alayer = selection[i].layer.name if alayer == "empty"
+          if selection[i].layer.name != alayer
+            alayer =""
+            break
+          end
         end
+      end # for i--defining layer name for file
 
-        new_wafer.footer
-      end #if new_wafer.find_bounds == nil
-    end #if @gcodeFile
-  end #if menu()
+      @namef = @namef +"_"+ alayer if alayer != ""
 
-  #clearConfig()
+      gcodeFile = UI.savepanel "Save Gcode File", "c:\\", @namef+".nc"
+      puts("Writing to #{gcodeFile}")
+      if gcodeFile
+        new_wafer = Wafer.new
+        if new_wafer.find_bounds == nil
+          Sketchup.set_status_text "Select Geometry!", SB_PROMPT
+          puts("No geometry selected")
+          UI.messagebox("No geometry selected", type = MB_OK)
+          return
+        else
+          new_wafer.out_file = gcodeFile
+          new_wafer.preview_layout = @config["orientation"]
+          new_wafer.height = 0
+          new_wafer.cutDepth = (@config["cutDepth"].to_l)
+          new_wafer.cutDiameter = (@config["cutDiameter"].to_l)
+          new_wafer.feedrate = (@config["feedrate"].to_l)
+          new_wafer.paramperpath = (@config["paramperpath"])
+          new_wafer.coolant = (@config["coolant"])
+          new_wafer.climb = (@config["climb"])
+          new_wafer.create_layers
+          new_wafer.minimumResolution = @config["minimumResolution"].to_l
+          new_wafer.units = @config["units"]
+          new_wafer.closeGaps = @config["closeGaps"].to_l
+          new_wafer.displayToolwidth = @config["displayToolwidth"]
+          new_wafer.namefile = @namef
 
-  Sketchup.set_status_text "", SB_VCB_VALUE
-}
+          new_wafer.header
 
+          if @config["scriptMode"] == "Single Plane"
+            new_wafer.single
+            @bevelflag = false
+          elsif @config["scriptMode"] == "Multiple Depths"
+            new_wafer.repeated_single
+            @bevelflag = false
+          elsif @config["scriptMode"] == "Contour"
+            new_wafer.contour
+            @bevelflag = false
+          elsif @config["scriptMode"] == "Single with Bevels"
+            new_wafer.single
+            @bevelflag = true
+          end  # @config -> scriptMode
 
-class Wafer
+          new_wafer.footer
+        end #if new_wafer.find_bounds == nil
+      end #if gcodeFile
+    end #if menu()
 
+    #clearConfig()
+  end #activate      #MV1
+
+  def namefile=(nf)
+    @namefi = nf
+  end
+  def namefile
+    @namefi
+  end
   def height=(z)
     @height = z
   end
   def height
     @height
   end
-  def cutDiamiter=(d)
-    @cutDiamiter = d
+  def cutDiameter=(d)
+    @cutDiameter = d
   end
-  def cutDiamiter
-    @cutDiamiter
+  def cutDiameter
+    @cutDiameter
   end
-  def decimalPlaces=(dp)
-    @decimalPlaces = dp
+  def feedrate=(fr)
+    @feedrate = fr
   end
-  def decimalPlaces
-    @decimalPlaces
+  def feedrate
+    @feedrate
+  end
+  def paramperpath=(prpp)
+    @paramperpath = prpp
+  end
+  def paramperpath
+    @paramperpath
+  end
+  def climb=(cli)
+    @climb = cli
+  end
+  def climb
+    @climb
+  end
+  def coolant=(cc)
+    @coolant = cc
+  end
+  def coolant
+    @coolant
   end
   def minimumResolution=(mr)
     @minimumResolution = mr
@@ -210,13 +391,13 @@ class Wafer
     @out_file = o
   end
   def out_file
-    @out_file 
+    @out_file
   end
   def closeGaps=(cg)
     @closeGaps = cg
   end
-  def displayPath=(dp)
-    @displayPath = dp
+  def displayToolwidth=(dp)
+    @displayToolwidth = dp
   end
 
   attr_accessor :preview_layout
@@ -225,7 +406,14 @@ class Wafer
   def initialize
     @model = Sketchup.active_model
     @selection = @model.selection
-  end
+    @envunit = Sketchup.active_model.options["UnitsOptions"]["LengthUnit"] # 0="; 1='; 2=mm; 3=cm; 4=m
+  end #initialize
+
+  def deactivate(view)
+    Sketchup::set_status_text("",SB_PROMPT)
+    Sketchup::set_status_text("",SB_VCB_LABEL)
+    Sketchup::set_status_text("",SB_VCB_VALUE)
+  end #deactivate
 
   def writeGcode(line, flush=false)
     if @outputfile == nil
@@ -239,40 +427,47 @@ class Wafer
       @outputfile.puts(@gcodeContent)
       @gcodeContent = String.new("")
     end
-  end
+  end # writeGcode
 
   # Populate output file with gcode header.
   def header
     @pos_x = 0
     @pos_y = 0
-    @pos_z = @corner_rbt.z + 1 
+    @pos_z = @corner_rbt.z + 1
 
-    if @units == "mm"
-      writeGcode("G21 ( Unit of measure: mm )")
-    else
-      writeGcode("G20 ( Unit of measure: inches )")
-    end
+    writeGcode("( Gcode for Machining of "+@namefi+" )")
+    tooldia = roundToPlaces(@cutDiameter, @units)
+    passdepth = roundToPlaces(cutDepth, @units)
+    writeGcode("( Tool Diameter "+tooldia.to_mm.to_s+" mm )") if @units == "mm"
+    writeGcode("( Tool Diameter "+tooldia.to_inch.to_s+" inch )") if @units == "inches"
+    writeGcode("( Depth of Pass "+passdepth.to_mm.to_s+" mm )") if @units == "mm"
+    writeGcode("( Depth of Pass "+passdepth.to_inch.to_s+" inch )") if @units == "inches"
+    writeGcode("G21 ( Unit of measure: mm )") if @units == "mm"
+    writeGcode("G20 ( Unit of measure: inches )") if @units == "inches"
     writeGcode("G90 ( Absolute programming )")
-    writeGcode("M03 ( Spindle on [clockwise] )")
-    writeGcode("G00 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)} "\
-               "( Rapid positioning to highest point +1 )")
-  end #header
+    writeGcode("M03 ( Spindle on clockwise )")
+    writeGcode("M7 (turn on mist coolant)") if coolant == "Yes"
+    writeGcode("M8 (turn on flood coolant)") if coolant == "Yes"
+    if paramperpath == "No"  #If per section it will be written in the loop
+      writeGcode("F"+@feedrate.to_mm.to_s+ "  (Feed Rate in mm/mn)") if @units == "mm"
+      writeGcode("F"+@feedrate.to_inch.to_s+ "  (Feed Rate in ipm)") if @units == "inches"
+    end #if paramperpath
+  end # header
 
   # Populate output file with gcode footer.
   def footer
     @pos_z = @corner_rbt.z + 1
 
     writeGcode("")
-    writeGcode("G00 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)} "\
-                     "( Rapid positioning to highest point +1 )")
+    writeGcode("M9 (turn off all coolant)") if coolant == "Yes"
     writeGcode("M05 ( Spindle stop )")
     writeGcode("M02 ( End of program )")
 
     writeGcode("")
     writeGcode("( end )", true)
-    
+
     @outputfile.close()
-  end #footer
+  end # footer
 
   def create_layers
     # here we create some separate layers to display our router paths on.
@@ -280,18 +475,19 @@ class Wafer
     # happily it does not seem to matter if we try to create a layer that already exists.
     outline_layer = layers.add "outline"
     path_layer = layers.add "path"
+    loops_layer = layers.add "loops"  # to put the loop labels into
   end #create_layers
 
   def single
     @height = @corner_lfb.z
     timeBegin = Time.now
-    puts(trace_outline)
+    trace_outline      #    puts(trace_outline)
     timeOutline = Time.now
-    puts(isolate_part)
+    isolate_part      #puts(isolate_part)
     timeIsolate = Time.now
-    puts(router_path)
+    router_path        #    puts(router_path)
     timeRoute = Time.now
-    puts(draw_part)
+    draw_part          #    puts(draw_part)
     timeEnd = Time.now
 
     puts("Outline:\t#{timeOutline - timeBegin}\n"\
@@ -300,47 +496,48 @@ class Wafer
          "Gcode:  \t#{timeEnd - timeRoute}\n"\
          "Total:  \t#{timeEnd - timeBegin} seconds")
 
-    puts("cutDiamiter:        #{@cutDiamiter.to_mm}mm\n"\
-         "cutDepth:           #{@cutDepth}mm\n"\
-         "decimalPlaces:      #{@decimalPlaces}\n"\
-         "minimumResolution:  #{@minimumResolution}mm\n"\
-         "units:              #{@units}\n"\
-         "closeGaps:          #{@closeGaps}mm\n"\
-         "displayPath:        #{@displayPath}\n"\
-         "version:            #{@@version}")
-
+    puts("cutDiameter: #{@cutDiameter.to_mm}mm\n"\
+         "cutDepth: #{@cutDepth.to_mm}mm\n"\
+         "feedrate #{@feedrate}/mn\n"\
+         "paramperpath: #{@paramperpath}\n"\
+         "minimumResolution: #{@minimumResolution.to_mm}mm\n"\
+         "units: #{@units}\n"\
+         "closeGaps: #{@closeGaps.to_mm}mm\n"\
+         "displayToolwidth: #{@displayToolwidth}\n"\
+         "coolant: #{@coolant}\n"\
+         "climb: #{@climb}\n"\
+         "version: #{@@version}")
     return
   end #def Single
 
   def repeated_single
-    puts(trace_outline)
-    puts(isolate_part)
-    puts(router_path)
+    trace_outline
+    isolate_part
+    router_path
 
-    @height = @corner_rbt.z.to_mm
-    thickness = (@corner_rbt.z - @corner_lfb.z).to_mm
+    @height = @corner_rbt.z.to_l
+    thickness = (@corner_rbt.z - @corner_lfb.z).to_l
 
     while thickness > 0
-      thickness -= @cutDepth.to_f
-      @height -= @cutDepth.to_f
-
-      puts(draw_part)
+      thickness -= @cutDepth
+      @height -= @cutDepth
+      draw_part
     end
-  
+
   end #def repeated_single
-  
+
   def contour
-    @height = @corner_rbt.z.to_mm
+    @height = @corner_rbt.z
     puts("@height: #{@height}")
     while @height > 0
-      @height -= @cutDepth.to_f
+      @height -= @cutDepth
       puts("@height: #{@height}")
-      puts(trace_outline)
-      puts(isolate_part)
-      puts(router_path)
-      puts(draw_part)
+      trace_outline
+      isolate_part
+      router_path
+      draw_part
     end
-  
+
   end #contour
 
   def find_bounds
@@ -355,7 +552,7 @@ class Wafer
     # boundary of selection
     @corner_lfb = @selection[0].bounds.corner(0)
     @corner_rbt = @selection[0].bounds.corner(0)
-    @selection.each do |entity| 
+    @selection.each do |entity|
       if entity.bounds.corner(0).x < @corner_lfb.x
         @corner_lfb.x = entity.bounds.corner(0).x
       end
@@ -377,10 +574,12 @@ class Wafer
     end # @selection.each do
 
     return true
-  end
+  end #find_bounds
+
+
 
   def trace_outline
-    Sketchup.set_status_text "Outline", SB_VCB_VALUE
+    Sketchup.set_status_text " Drawing Outline", SB_PROMPT
     # Get "handles" to our model and the Entities collection it contains.
     entities = @model.entities
 
@@ -392,12 +591,12 @@ class Wafer
     entities2 = temparyGroup.entities
 
     # Make a face parallel to the ground to check for intersections with models faces.
-    new_face = entities2.add_face [@corner_lfb[0]-0.1, @corner_lfb[1]-0.1, @height.mm],\
-                                  [@corner_rbt[0]+0.1, @corner_lfb[1]-0.1, @height.mm],\
-                                  [@corner_rbt[0]+0.1, @corner_rbt[1]+0.1, @height.mm],\
-                                  [@corner_lfb[0]-0.1, @corner_rbt[1]+0.1, @height.mm]
+    new_face = entities2.add_face [@corner_lfb[0]-0.1, @corner_lfb[1]-0.1, @height],\
+      [@corner_rbt[0]+0.1, @corner_lfb[1]-0.1, @height],\
+      [@corner_rbt[0]+0.1, @corner_rbt[1]+0.1, @height],\
+      [@corner_lfb[0]-0.1, @corner_rbt[1]+0.1, @height]
 
-    @selection.each do |entity| 
+    @selection.each do |entity|
       if entity.typename == "Face"
         face = entity
         face.edges.each do |edge|
@@ -414,23 +613,6 @@ class Wafer
             end
           end
         end
-        #intersect = Geom.intersect_plane_plane(new_face.plane, face.plane)
-        #if intersect
-        #  puts("intersect: #{intersect}")
-        #  face.edges.each do |edge|
-        #    point = Geom.intersect_line_line(intersect, edge.line)
-        #    if point
-        #      puts("  point: #{point}  #{face.classify_point(point)}  not: #{Sketchup::Face::PointNotOnPlane}")
-        #    end
-        #    if point and (face.classify_point(point) == Sketchup::Face::PointOnVertex or face.classify_point(point) == Sketchup::Face::PointOnEdge)
-        #      if p1 == nil
-        #        p1 = point
-        #      elsif point != p1
-        #        p2 = point
-        #      end
-        #    end
-        #  end
-        #end
 
         if p1 and p2
           @lines.push [p1, p2]
@@ -443,7 +625,7 @@ class Wafer
 
     return "done trace_outline"
   end #trace_outline
-  
+
   def isolate_part
     # Here we iterate through all points on a slice and make sure they are in
     # consecutive order.
@@ -454,7 +636,7 @@ class Wafer
     # The code is quicker if the @wafer_object is a loop (ie, finishes at the
     # same physical point it starts at)
     # but the code will work if you only run it on single faces as well.
-    Sketchup.set_status_text "Isolate", SB_VCB_VALUE
+    #MV    Sketchup.set_status_text "Isolate", SB_VCB_VALUE
     @wafer_objects = []
     wafer_object = []
 
@@ -466,9 +648,9 @@ class Wafer
 
       loop do
         adjacent = @lines.select{ |nextLine| nextLine[0] == head or\
-                                             nextLine[0] == tail or\
-                                             nextLine[1] == head or\
-                                             nextLine[1] == tail}
+                                  nextLine[0] == tail or\
+                                  nextLine[1] == head or\
+                                  nextLine[1] == tail}
         if adjacent.size == 0
           break
         end
@@ -497,7 +679,7 @@ class Wafer
       end  # loop do
 
       if wafer_object[0] != wafer_object.last
-        if wafer_object[0].distance(wafer_object.last).to_mm < @closeGaps
+        if wafer_object[0].distance(wafer_object.last) < @closeGaps
           puts("Closing loop in shape #{@wafer_objects.size + 1}")
           wafer_object.push(Geom::Point3d.new(wafer_object[0].x,\
                                               wafer_object[0].y,\
@@ -509,40 +691,43 @@ class Wafer
 
     return "done isolate_part"
   end #isolate_part
- 
+
   # Draw a movement of the cutting head to gcode file.
-  def draw_path_gcode(point)
+  def draw_path_gcode(point, rapid)
     @pos_x = point.x
     @pos_y = point.y
-    writeGcode("G01 X#{roundToPlaces(@pos_x, @decimalPlaces, @units)} "\
-               "Y#{roundToPlaces(@pos_y, @decimalPlaces, @units)}")
+    if rapid
+      gcommand = "G00"
+    else
+      gcommand = "G01"
+    end #if speed
     if (@height != @pos_z)
       @pos_z = @height
-      writeGcode("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
+      writeGcode("G01 Z#{roundToPlaces(@pos_z, @units)}")
     end #if
-  end
+  end #draw_path_gcode
 
-  # Draw a movement of the cutting head to screen. 
+  # Draw a movement of the cutting head to screen.
   def draw_path_screen(entities, path_layer, start, finish, colour="green")
-    if @displayPath == "true" and @cutDiamiter > 0
+    if @displayToolwidth == "Yes" and @cutDiameter > 0
       draw_path_screen_complex(entities, path_layer, start, finish, colour)
     else
       draw_path_screen_simple(entities, path_layer, start, finish, colour)
     end
-  end
+  end #draw_path_screen
 
   def draw_path_screen_simple(entities, path_layer, start, finish, colour)
     new_line = entities.add_line [start.x + @offset_x,\
                                   start.y + @offset_y,\
-                                  @height.mm + @offset_z + 0.001],\
+                                  @height + @offset_z + 0.001],\
                                   [finish.x + @offset_x,\
                                    finish.y + @offset_y,\
-                                   @height.mm + @offset_z + 0.001]
+                                   @height + @offset_z + 0.001]
     if new_line
       new_line.material = colour
       new_line.layer = path_layer
     end
-  end
+  end #draw_path_screen_simple
 
   def draw_path_screen_complex(entities, path_layer, start, finish, colour)
     if start == finish
@@ -551,13 +736,13 @@ class Wafer
 
     start = [start.x + @offset_x,\
              start.y + @offset_y,\
-             @height.mm + @offset_z + 0.001]
+             @height + @offset_z + 0.001]
     finish = [finish.x + @offset_x,\
-             finish.y + @offset_y,\
-             @height.mm + @offset_z + 0.001]
-    
+              finish.y + @offset_y,\
+              @height + @offset_z + 0.001]
+
     vector = Geom::Vector3d.new(0, 0, 1).normalize!
-    new_edges = entities.add_circle start, vector, @cutDiamiter / 2
+    new_edges = entities.add_circle start, vector, @cutDiameter / 2
     new_face = entities.add_face(new_edges)
     if new_face
       new_face.layer = path_layer
@@ -572,27 +757,27 @@ class Wafer
       new_face.all_connected.each do |edge|
         edge.layer = path_layer
       end #new_face.all_connected.each
-    end
+    end # if new_face
 
     xv = start.x - finish.x
     yv = start.y - finish.y
     lenv = Math.sqrt((xv * xv) + (yv * yv))
-    if lenv > @cutDiamiter / 2
+    if lenv > @cutDiameter / 2
       # Only bother with this if it's longer than the cutter radius circle.
-      xoffset =  - (yv * @cutDiamiter / lenv / 2)
-      yoffset =  + (xv * @cutDiamiter / lenv / 2)
+      xoffset =  - (yv * @cutDiameter / lenv / 2)
+      yoffset =  + (xv * @cutDiameter / lenv / 2)
       new_face = entities.add_face [start.x + xoffset,\
                                     start.y + yoffset,\
-                                    @height.mm + 0.001],\
+                                    @height + 0.001],\
                                     [start.x - xoffset,\
                                      start.y - yoffset,\
-                                     @height.mm + 0.001],\
+                                     @height + 0.001],\
                                      [finish.x - xoffset,\
                                       finish.y - yoffset,\
-                                      @height.mm + 0.001],\
+                                      @height + 0.001],\
                                       [finish.x + xoffset,\
                                        finish.y + yoffset,\
-                                       @height.mm + 0.001]
+                                       @height + 0.001]
       new_face.material = colour
       new_face.back_material = colour
 
@@ -600,33 +785,42 @@ class Wafer
       new_face.all_connected.each do |edge|
         edge.layer = path_layer
       end #new_face.all_connected.each
-    end #lenv > @cutDiamiter / 2
-  end
+    end #lenv > @cutDiameter / 2
+  end # draw_path_screen_complex
 
   def draw_part
     # This draws out the outline of the identified objects.
-    Sketchup.set_status_text "Write gcode", SB_VCB_VALUE
-  
-    writeGcode("")
-  
+    Sketchup.set_status_text "Writing gcode", SB_PROMPT
+
+    #    writeGcode("")
+
     if @preview_layout == "Stacked"
-    unless @offset_y
-      @offset_x = 0
-      @offset_y = @model_rbt[1]
-      @offset_z = 0
-    else
-      #@offset_z += @height
-    end #unless @offset_y
-    
+      unless @offset_y
+        @offset_x = 0
+        @offset_y = @model_rbt[1]
+        @offset_z = 0
+      else
+        #@offset_z += @height
+      end #unless @offset_y
+
     elsif @preview_layout == "Spread"
-    unless @y_flat_spacing
-      @y_flat_spacing = @model_rbt[1]
+      unless @y_flat_spacing
+        @y_flat_spacing = @model_rbt[1]
+        @offset_x = 0
+        @offset_y = @model_rbt[1]
+        @offset_z = 0
+      else
+        @offset_y += @model_rbt[1]
+      end #unless
+
+    elsif @preview_layout == "On Part"
+      # unless @y_flat_spacing
       @offset_x = 0
-      @offset_y = @model_rbt[1]
+      @offset_y = 0
       @offset_z = 0
-    else
-      @offset_y += @model_rbt[1]
-    end #unless
+      #else
+      #  @offset_y += @model_rbt[1]
+      #end #unless
 
     end #if @preview_layout
 
@@ -634,45 +828,56 @@ class Wafer
     layers = @model.layers
     outline_layer = layers["outline"]
     path_layer = layers["path"]
+    loops_layer = layers["loops"]
 
     puts("Drawing #{@wafer_objects.size} objects")
-  
-    # make sure we are not cutting below the bottom of the selected object.
-    if @height.mm < @corner_lfb.z
-      @height = @corner_lfb.z.to_mm
-    end #if
-  
-    # draw outline of shape to be cut.  
-    puts("Draw shape outline to screen in red")
-    count = 1
-    @wafer_objects.each do |object|
-      Sketchup.set_status_text "Show outline: #{count}/#{@wafer_objects.length}", SB_VCB_VALUE
-      count += 1
 
-      point_previous = [nil,nil,nil]
-      object.each do |point|
-        if point_previous[0]
-          new_line = entities.add_line [point_previous[0] + @offset_x,\
-                                        point_previous[1] + @offset_y,\
-                                        @height.mm + @offset_z],\
-                                       [point[0] + @offset_x,\
-                                        point[1] + @offset_y,\
-                                        @height.mm + @offset_z]
-          new_line.material = "red"
-          new_line.layer = outline_layer
-        end #if
-        point_previous = point
-      end #@point.each
-    end #@wafer_objects.each
-  
+    # make sure we are not cutting below the bottom of the selected object.
+    if @height < @corner_lfb.z
+      @height = @corner_lfb.z
+    end #if
+
+    # MV Turns on edges color by material display
+    Sketchup.active_model.rendering_options["EdgeColorMode"]=0
+
+    # draw outline of shape to be cut, only if path is not drawn "on Part"
+    if @preview_layout != "On Part"
+      puts("Draw shape outline to screen in red")
+      count = 1
+      @wafer_objects.each do |object|
+        Sketchup.set_status_text "Showing outline: #{count}/#{@wafer_objects.length}", SB_PROMPT
+        count += 1
+
+        point_previous = [nil,nil,nil]
+        object.each do |point|
+          if point_previous[0]
+            new_line = entities.add_line [point_previous[0] + @offset_x,\
+                                          point_previous[1] + @offset_y,\
+                                          @height + @offset_z],\
+                                          [point[0] + @offset_x,\
+                                           point[1] + @offset_y,\
+                                           @height + @offset_z]
+            new_line.material = "red"
+            new_line.layer = outline_layer
+          end #if
+          point_previous = point
+        end #@point.each
+      end #@wafer_objects.each
+    end #if @preview_layout
+
     # draw router path.
     puts("Draw router path to screen in green and write gcode")
-    count = 0
+    count = 1
     @wafer_paths.each do |path|
-      Sketchup.set_status_text "Write gcode: #{count}/#{@wafer_paths.length}", SB_VCB_VALUE
-      writeGcode("(loop #{count})")
+      Sketchup.set_status_text "Writing gcode: #{count}/#{@wafer_paths.length}", SB_PROMPT
+      writeGcode ("")
+      loopheight = roundToPlaces (@pos_z, @units)
+      writeGcode("( Contour #{count} Path #{loopheight} )")                #it works but loopheight is the height of the preceding or next loop
+      loopname = "Contour #{count} Z #{loopheight}"
 
-      if path.length == 0
+      #MV here I would ask for change in parameters, if paramperpath == "Yes"; make sure it does it for the first loop as well.
+
+      if path.length == 0  #&& cutDiameter != 0                                                              #MV is this where we reject non closed loops?
         puts("Path #{count} is not a loop. Try increasing closeGaps value.")
         next
       end
@@ -683,18 +888,24 @@ class Wafer
       if @pos_x != previous_point.x or @pos_y != previous_point.y
         # Move spindle to safe height.
         @pos_z = @corner_rbt.z + 1
-        writeGcode("G01 Z#{roundToPlaces(@pos_z, @decimalPlaces, @units)}")
+        writeGcode("G00 Z#{roundToPlaces(@pos_z, @units)}")
       end #if
-      
-      draw_path_gcode(previous_point)
+
+      draw_path_gcode(previous_point, true)
 
       path.each do |point|
         # Make sure there has been at least some movement.
-        if previous_point and\
-            ((point.x.to_mm - previous_point.x.to_mm).abs > @minimumResolution or\
-             (point.y.to_mm - previous_point.y.to_mm).abs > @minimumResolution)
-          draw_path_gcode(point)
+
+        # MV 4/26/20 that is the only way minimum res is used. since the data is set to a given res
+        # which is 0.001 for mm and 0.0001 for inches then all it needs is x-x>0 or y-y>0 ?
+        if previous_point and ((point.x - previous_point.x).abs > @minimumResolution or (point.y - previous_point.y).abs > @minimumResolution)
+          draw_path_gcode(point, false)
           draw_path_screen(entities, path_layer, previous_point, point)
+          if point == path.first
+            anchorpt = point
+            anchorpt.y = anchorpt.y + @offset_y
+            draw_label (entities, anchorpt,loopname, "loops",@pos_z, "green")
+          end
           previous_point = point
         end #if previous_point and...
       end #@path.each do |point|
@@ -702,16 +913,43 @@ class Wafer
 
     return "done draw_part"
   end #draw_part
-  
-  
+
+  def draw_label (ents,loc,name,lay, lev, mat)
+    # puts text "name" at "loc" and in layer "lay", and height "lev" for entities/path "ents", paint with material "mat")
+    #Scale of letters is 1/25 of the total size in y of the model.
+
+
+    #draws arrow at "loc"
+    #orientation for text is???
+    #    looptext=text.text= ("name")
+    #    looptext=text.arrow_type=(2)
+    #    looptext,text_vector= (50,50,50)
+    #    looptxt=text.display_leader= true
+    #    looptext=text.attached_to=(loc)
+    #    looptxt=text.leader_type= (1) # 1 for view based 2 for pushpin
+    labelgroup = ents.add_group
+    labelgroup.layer= (lay)
+    labelgroup.material= (mat)
+    label = labelgroup.entities
+    modelysize = @corner_lfb.y - @corner_rbt.y
+    scale = modelysize.abs
+    scale = scale/25
+    label.add_3d_text (name, TextAlignLeft, "Arial", true, false, scale, 0.5, lev , true, 0.0)
+    t=Geom::Transformation.translation (loc)
+    labelgroup.move! t
+
+  end #def draw_label
+
+
+
   def router_path
-    Sketchup.set_status_text "Route", SB_VCB_VALUE
+    Sketchup.set_status_text "Machining", SB_PROMPT
 
     entities = @model.entities
 
     @wafer_paths=[]
 
-    if @cutDiamiter == 0
+    if @cutDiameter == 0
       @wafer_objects.each do |object|
         @wafer_paths.push(object)
       end
@@ -723,8 +961,7 @@ class Wafer
       firstLine = nil
       lastLine = nil
 
-      Sketchup.set_status_text "Route: #{@wafer_paths.length}/"\
-                               "#{@wafer_objects.length}", SB_VCB_VALUE
+      Sketchup.set_status_text "Machining: #{@wafer_paths.length}/#{@wafer_objects.length}", SB_PROMPT
 
       # This logic only works for loops.
       # ie, when the line starts and finishes in the same place.
@@ -748,18 +985,18 @@ class Wafer
           pathVect = Geom::Vector3d.new(lastPoint.x - point.x,
                                         lastPoint.y - point.y,
                                         0)
-          # Right angles to pathVect, length of @cutDiamiter / 2 (radius).
+          # Right angles to pathVect, length of @cutDiameter / 2 (radius).
           offsetVect = Geom::Vector3d.new(pathVect.y, -pathVect.x, 0)
           if offsetVect.length == 0
             puts("offsetVect.length == 0")
             next
           end
-          offsetVect.length = @cutDiamiter / 2
-          
+          offsetVect.length = @cutDiameter / 2
+
           # Get a point on the cutting path.
           midPoint = Geom::Point3d.linear_combination(0.5, lastPoint, 0.5, point)
           midPath = midPoint.offset(offsetVect)
-          midPath.z = @height.mm
+          midPath.z = @height
 
           # Check if the cutting path should be inside or outside the current
           # geometry for this point by seing how many shapes it is inside.
@@ -774,7 +1011,10 @@ class Wafer
         end #lastPoint != nil
         lastPoint = point
       end
-      outsideInside = outsideInsideTotal / object.length
+      #      puts ("OIT " + outsideInsideTotal.to_s)
+      outsideInside = outsideInsideTotal / object.length   #MV 4/23/20 I have a feeling that this is what creates the offset problem, it's not an integer here
+      outsideInside = outsideInside.round() #MV to correct offset bug; Eventually may use a if >0 then 1, if <0 then -1
+      #      puts ("OI " + outsideInside.to_s)
 
       lastPoint = nil
       object.each do |point|
@@ -782,19 +1022,19 @@ class Wafer
           pathVect = Geom::Vector3d.new(lastPoint.x - point.x,
                                         lastPoint.y - point.y,
                                         0)
-          
-          # Right angles to pathVect, length of @cutDiamiter / 2 (radius).
+
+          # Right angles to pathVect, length of @cutDiameter / 2 (radius).
           offsetVect = Geom::Vector3d.new(pathVect.y, -pathVect.x, 0)
           if offsetVect.length == 0
             puts("offsetVect.length == 0")
             next
           end
-          offsetVect.length = @cutDiamiter / 2
+          offsetVect.length = @cutDiameter / 2
 
           # Get a point on the cutting path.
-          offsetVect.length *= outsideInside
+          offsetVect.length *= outsideInside      #MV 4/23/20 and here we multiply by it, so it create the non even value for the offset.
           pathPoint = point.offset(offsetVect)
-          pathPoint.z = @height.mm
+          pathPoint.z = @height
 
           line = [pathPoint, pathVect]
 
@@ -813,7 +1053,7 @@ class Wafer
         end #if lastPoint
         lastPoint = point
       end #@point.each
-      
+
       centerpoint = Geom.intersect_line_line(lastLine, firstLine)
       if centerpoint
         wafer_path.push(centerpoint)
@@ -826,7 +1066,13 @@ class Wafer
       end
 
       @wafer_paths.push(wafer_path)
-    end #@wafer_objects.each  
+    end #@wafer_objects.each
   end #router_path
-  
+
+end #class Wafer
+
+unless file_loaded?(__FILE__)
+  menu = UI.menu('Tools')
+  menu.add_item('Generate Gcode') { Sketchup.active_model.select_tool Wafer.new }
+  file_loaded(__FILE__)
 end
