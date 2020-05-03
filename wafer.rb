@@ -2,7 +2,7 @@
 
 MIT License
 
-Copyright (c) 2020 The Wafer Authors.
+Copyright (c) 2020 The Wafer Authors. (See AUTHORS file.)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -106,7 +106,7 @@ Introduced an environment unit flag @envunit, to condition behavior.
 @@config_file = 'wafer_rb.config'
 
 require 'sketchup'
-class Wafer  #MV1
+class Wafer
 
   # Reset config to default values.
   def clearConfig()
@@ -229,7 +229,6 @@ class Wafer  #MV1
     raise ("Invalid units: " + units.to_s)
   end # roundToPlaces
 
-
   # Add a menu item to launch our plugin.
   def activate()
     @configKeys = ["cutDiameter",\
@@ -259,7 +258,7 @@ class Wafer  #MV1
         Sketchup.send_action "showRubyPanel:"
       end # Ruby Console
 
-      #MV to generate file with name
+      # Generate file with name
       modelPath = Sketchup.active_model.path
       if File.exists?(modelPath)
         @namef = File.basename(modelPath, '.*')
@@ -267,6 +266,7 @@ class Wafer  #MV1
         @namef = "untitled"
       end
 
+      # Get the name of selected layer.
       model = Sketchup.active_model
       selection = model.selection
       alayer = "empty"
@@ -275,7 +275,7 @@ class Wafer  #MV1
         if (selection[i].typename  == "Edge" || selection[i].typename  == "Face")
           alayer = selection[i].layer.name if alayer == "empty"
           if selection[i].layer.name != alayer
-            alayer =""
+            alayer = ""
             break
           end
         end
@@ -286,127 +286,55 @@ class Wafer  #MV1
       gcodeFile = UI.savepanel "Save Gcode File", "c:\\", @namef+".nc"
       puts("Writing to #{gcodeFile}")
       if gcodeFile
-        new_wafer = Wafer.new
-        if new_wafer.find_bounds == nil
+        if find_bounds == nil
           Sketchup.set_status_text "Select Geometry!", SB_PROMPT
           puts("No geometry selected")
           UI.messagebox("No geometry selected", type = MB_OK)
           return
         else
-          new_wafer.out_file = gcodeFile
-          new_wafer.preview_layout = @config["orientation"]
-          new_wafer.height = 0
-          new_wafer.cutDepth = (@config["cutDepth"].to_l)
-          new_wafer.cutDiameter = (@config["cutDiameter"].to_l)
-          new_wafer.feedrate = (@config["feedrate"].to_l)
-          new_wafer.paramperpath = (@config["paramperpath"])
-          new_wafer.coolant = (@config["coolant"])
-          new_wafer.climb = (@config["climb"])
-          new_wafer.create_layers
-          new_wafer.minimumResolution = @config["minimumResolution"].to_l
-          new_wafer.units = @config["units"]
-          new_wafer.closeGaps = @config["closeGaps"].to_l
-          new_wafer.displayToolwidth = @config["displayToolwidth"]
-          new_wafer.namefile = @namef
-
-          new_wafer.header
+          @out_file = gcodeFile
+          @preview_layout = @config["orientation"]
+          height = 0
+          @cutDepth = (@config["cutDepth"].to_l)
+          @cutDiameter = (@config["cutDiameter"].to_l)
+          @feedrate = (@config["feedrate"].to_l)
+          @paramperpath = (@config["paramperpath"])
+          @coolant = (@config["coolant"])
+          @climb = (@config["climb"])
+          create_layers
+          @minimumResolution = @config["minimumResolution"].to_l
+          @units = @config["units"]
+          @closeGaps = @config["closeGaps"].to_l
+          @displayToolwidth = @config["displayToolwidth"]
+          header
 
           if @config["scriptMode"] == "Single Plane"
-            new_wafer.single
+            single
             @bevelflag = false
           elsif @config["scriptMode"] == "Multiple Depths"
-            new_wafer.repeated_single
+            repeated_single
             @bevelflag = false
           elsif @config["scriptMode"] == "Contour"
-            new_wafer.contour
+            contour
             @bevelflag = false
           elsif @config["scriptMode"] == "Single with Bevels"
-            new_wafer.single
+            single
             @bevelflag = true
           end  # @config -> scriptMode
 
-          new_wafer.footer
-        end #if new_wafer.find_bounds == nil
+          footer
+        end #if find_bounds == nil
       end #if gcodeFile
     end #if menu()
 
     #clearConfig()
   end #activate      #MV1
 
-  def namefile=(nf)
-    @namefi = nf
-  end
-  def namefile
-    @namefi
-  end
-  def height=(z)
-    @height = z
-  end
-  def height
-    @height
-  end
-  def cutDiameter=(d)
-    @cutDiameter = d
-  end
-  def cutDiameter
-    @cutDiameter
-  end
-  def feedrate=(fr)
-    @feedrate = fr
-  end
-  def feedrate
-    @feedrate
-  end
-  def paramperpath=(prpp)
-    @paramperpath = prpp
-  end
-  def paramperpath
-    @paramperpath
-  end
-  def climb=(cli)
-    @climb = cli
-  end
-  def climb
-    @climb
-  end
-  def coolant=(cc)
-    @coolant = cc
-  end
-  def coolant
-    @coolant
-  end
-  def minimumResolution=(mr)
-    @minimumResolution = mr
-  end
-  def minimumResolution
-    @minimumResolution
-  end
-  def units=(units)
-    @units = units
-  end
-  def units
-    @units
-  end
-  def out_file=(o)
-    @out_file = o
-  end
-  def out_file
-    @out_file
-  end
-  def closeGaps=(cg)
-    @closeGaps = cg
-  end
-  def displayToolwidth=(dp)
-    @displayToolwidth = dp
-  end
-
-  attr_accessor :preview_layout
-  attr_accessor :cutDepth
-
   def initialize
     @model = Sketchup.active_model
     @selection = @model.selection
-    @envunit = Sketchup.active_model.options["UnitsOptions"]["LengthUnit"] # 0="; 1='; 2=mm; 3=cm; 4=m
+    # UnitsOptions: 0="; 1='; 2=mm; 3=cm; 4=m
+    @envunit = Sketchup.active_model.options["UnitsOptions"]["LengthUnit"]
   end #initialize
 
   def deactivate(view)
@@ -416,7 +344,11 @@ class Wafer  #MV1
   end #deactivate
 
   def writeGcode(line, flush=false)
-    if @outputfile == nil
+    if @outputfile.nil?
+      if @out_file.nil? || @out_file.empty?
+        raise ("Missing filename in variable @out_file")
+      end
+
       puts("Opening file: #{@out_file}")
       @outputfile = File.new( @out_file , "w" )
       @gcodeContent = String.new("")
@@ -435,9 +367,9 @@ class Wafer  #MV1
     @pos_y = 0
     @pos_z = @corner_rbt.z + 1
 
-    writeGcode("( Gcode for Machining of "+@namefi+" )")
+    writeGcode("( Gcode for Machining of " + @namef + " )")
     tooldia = roundToPlaces(@cutDiameter, @units)
-    passdepth = roundToPlaces(cutDepth, @units)
+    passdepth = roundToPlaces(@cutDepth, @units)
     writeGcode("( Tool Diameter "+tooldia.to_mm.to_s+" mm )") if @units == "mm"
     writeGcode("( Tool Diameter "+tooldia.to_inch.to_s+" inch )") if @units == "inches"
     writeGcode("( Depth of Pass "+passdepth.to_mm.to_s+" mm )") if @units == "mm"
@@ -446,12 +378,12 @@ class Wafer  #MV1
     writeGcode("G20 ( Unit of measure: inches )") if @units == "inches"
     writeGcode("G90 ( Absolute programming )")
     writeGcode("M03 ( Spindle on clockwise )")
-    writeGcode("M7 (turn on mist coolant)") if coolant == "Yes"
-    writeGcode("M8 (turn on flood coolant)") if coolant == "Yes"
-    if paramperpath == "No"  #If per section it will be written in the loop
+    writeGcode("M7 (turn on mist coolant)") if @coolant == "Yes"
+    writeGcode("M8 (turn on flood coolant)") if @coolant == "Yes"
+    if @paramperpath == "No"  #If per section it will be written in the loop
       writeGcode("F"+@feedrate.to_mm.to_s+ "  (Feed Rate in mm/mn)") if @units == "mm"
       writeGcode("F"+@feedrate.to_inch.to_s+ "  (Feed Rate in ipm)") if @units == "inches"
-    end #if paramperpath
+    end #if @paramperpath
   end # header
 
   # Populate output file with gcode footer.
@@ -459,7 +391,7 @@ class Wafer  #MV1
     @pos_z = @corner_rbt.z + 1
 
     writeGcode("")
-    writeGcode("M9 (turn off all coolant)") if coolant == "Yes"
+    writeGcode("M9 (turn off all coolant)") if @coolant == "Yes"
     writeGcode("M05 ( Spindle stop )")
     writeGcode("M02 ( End of program )")
 
@@ -802,7 +734,6 @@ class Wafer  #MV1
       else
         #@offset_z += @height
       end #unless @offset_y
-
     elsif @preview_layout == "Spread"
       unless @y_flat_spacing
         @y_flat_spacing = @model_rbt[1]
@@ -812,16 +743,13 @@ class Wafer  #MV1
       else
         @offset_y += @model_rbt[1]
       end #unless
-
     elsif @preview_layout == "On Part"
       # unless @y_flat_spacing
       @offset_x = 0
       @offset_y = 0
       @offset_z = 0
-      #else
-      #  @offset_y += @model_rbt[1]
-      #end #unless
-
+    else
+      puts("Invalid value for @preview_layout: #{@preview_layout}")
     end #if @preview_layout
 
     entities = @model.entities
@@ -871,7 +799,7 @@ class Wafer  #MV1
     @wafer_paths.each do |path|
       Sketchup.set_status_text "Writing gcode: #{count}/#{@wafer_paths.length}", SB_PROMPT
       writeGcode ("")
-      loopheight = roundToPlaces (@pos_z, @units)
+      loopheight = roundToPlaces(@pos_z, @units)
       writeGcode("( Contour #{count} Path #{loopheight} )")                #it works but loopheight is the height of the preceding or next loop
       loopname = "Contour #{count} Z #{loopheight}"
 
@@ -904,7 +832,7 @@ class Wafer  #MV1
           if point == path.first
             anchorpt = point
             anchorpt.y = anchorpt.y + @offset_y
-            draw_label (entities, anchorpt,loopname, "loops",@pos_z, "green")
+            draw_label(entities, anchorpt,loopname, "loops",@pos_z, "green")
           end
           previous_point = point
         end #if previous_point and...
@@ -917,7 +845,6 @@ class Wafer  #MV1
   def draw_label (ents,loc,name,lay, lev, mat)
     # puts text "name" at "loc" and in layer "lay", and height "lev" for entities/path "ents", paint with material "mat")
     #Scale of letters is 1/25 of the total size in y of the model.
-
 
     #draws arrow at "loc"
     #orientation for text is???
@@ -934,7 +861,7 @@ class Wafer  #MV1
     modelysize = @corner_lfb.y - @corner_rbt.y
     scale = modelysize.abs
     scale = scale/25
-    label.add_3d_text (name, TextAlignLeft, "Arial", true, false, scale, 0.5, lev , true, 0.0)
+    label.add_3d_text(name, TextAlignLeft, "Arial", true, false, scale, 0.5, lev , true, 0.0)
     t=Geom::Transformation.translation (loc)
     labelgroup.move! t
 
