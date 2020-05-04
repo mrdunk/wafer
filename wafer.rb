@@ -160,7 +160,7 @@ class Wafer
     @configKeys.each do | key |
       value = Sketchup.read_default(@@config_file, key)
       puts("load: #{key}, #{value}")
-      if value == nil
+      if value.nil?
         value = defaultValue[key]
       end
       @config[key] = value
@@ -286,7 +286,7 @@ class Wafer
 
       # Get the name of selected layer.
       alayer = "empty"
-      it = @selection.count - 1										
+      it = @selection.count - 1
       for i in 0..it do
         if (@selection[i].typename  == "Edge" || @selection[i].typename  == "Face")
           alayer = @selection[i].layer.name if alayer == "empty"
@@ -491,7 +491,7 @@ class Wafer
   end #contour
 
   def find_bounds
-    if @selection == nil or @selection[0] == nil
+    if @selection.nil? or @selection[0].nil?
       return
     end
 
@@ -540,8 +540,8 @@ class Wafer
     # Get "handles" to our model and the Entities collection it contains.
     entities = @model.entities
 
-    p1=nil
-    p2=nil
+    p1 = nil
+    p2 = nil
     @lines = []
 
     temparyGroup = entities.add_group
@@ -562,7 +562,7 @@ class Wafer
               (face.classify_point(point) == Sketchup::Face::PointOnVertex or\
                face.classify_point(point) == Sketchup::Face::PointOnEdge or\
                face.classify_point(point) == Sketchup::Face::PointInside)
-            if p1 == nil
+          if p1.nil?
               p1 = point
             elsif point != p1
               p2 = point
@@ -750,8 +750,6 @@ class Wafer
     # This draws out the outline of the identified objects.
     Sketchup.set_status_text "Writing gcode", SB_PROMPT
 
-    #    writeGcode("")
-
     if @preview_layout == "Stacked"
       unless @offset_y
         @offset_x = 0
@@ -797,7 +795,7 @@ class Wafer
         Sketchup.set_status_text "Showing outline: #{count}/#{@wafer_objects.length}", SB_PROMPT
         count += 1
 
-        point_previous = [nil,nil,nil]
+        point_previous = [nil, nil, nil]
         object.each do |point|
           if point_previous[0]
             new_line = entities.add_line [point_previous[0] + @offset_x,\
@@ -851,8 +849,7 @@ class Wafer
           draw_path_gcode(point, false)
           draw_path_screen(entities, path_layer, previous_point, point)
           if point == path.first
-            anchorpt = point
-            draw_label (entities, anchorpt, loopname, "Contour ID", @height, "green")
+            draw_label(entities, point, @height, loopname, "Contour ID", "green")
           end
           previous_point = point
         end #if previous_point and...
@@ -862,30 +859,35 @@ class Wafer
     return "done draw_part"
   end #draw_part
 
-  def draw_label (ents,loc,name,lay, lev, mat)
-    # puts text "name" at "loc" and in layer "lay", and height "lev" for entities/path "ents", paint with material "mat")
-    #Scale of letters is 1/25 of the total size in y of the model.
+  def draw_label(entities, position, height, name, layer, material="green", letter_height=nil)
+    # Puts text "name" at "position" and in layer "layer" for
+    # entities/path "entities", paint with material "mat")
+    # letter_height is 1/25 of the total size in y of the model.
 
-    #draws arrow at "loc"
-    #orientation for text is???
-    #    looptext=text.text= ("name")
-    #    looptext=text.arrow_type=(2)
-    #    looptext,text_vector= (50,50,50)
-    #    looptxt=text.display_leader= true
-    #    looptext=text.attached_to=(loc)
-    #    looptxt=text.leader_type= (1) # 1 for view based 2 for pushpin
-    labelgroup = ents.add_group
-    labelgroup.layer= (lay)
-    labelgroup.material= (mat)
+    _position = position.clone + [@offset_x, @offset_y, @offset_z]
+    
+    if letter_height.nil?
+      letter_height = Math.sqrt(@scaley * @scalex)/27
+    end
+    
+    labelgroup = entities.add_group
+    labelgroup.layer = layer
+    labelgroup.material = material
     label = labelgroup.entities
-    scalet = Math.sqrt(@scaley*@scalex)/27
-    label.add_3d_text (name, TextAlignLeft, "Arial", true, false, scalet, 0.5, lev , true, 0.0)
-    t=Geom::Transformation.translation (loc)
+
+    label.add_3d_text(name,
+                      TextAlignLeft,
+                      "Arial",
+                      is_bold = true,
+                      is_italic = false,
+                      letter_height,
+                      tolerance = 0.5,
+                      z = height,
+                      is_filled = true,
+                      extrusion = 0.0)
+    t = Geom::Transformation.translation(_position)
     labelgroup.move! t
-
   end #def draw_label
-
-
 
   def router_path
     Sketchup.set_status_text "Machining", SB_PROMPT
@@ -983,7 +985,7 @@ class Wafer
 
           line = [pathPoint, pathVect]
 
-          if firstLine == nil
+          if firstLine.nil?
             firstLine = line
           else
             centerpoint = Geom.intersect_line_line(lastLine, line)
